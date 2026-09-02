@@ -21,7 +21,7 @@ assert.deepEqual(
   {
     enabled: true,
     providers: [
-      { id: "codex", enabled: true },
+      { id: "codex", enabled: true, network: "inherit" },
       { id: "claude", enabled: true },
     ],
   },
@@ -30,7 +30,13 @@ assert.deepEqual(
 const configured = {
   enabled: true,
   providers: [
-    { id: "codex" as const, enabled: true, model: "gpt-5.4", effort: "high" },
+    {
+      id: "codex" as const,
+      enabled: true,
+      model: "gpt-5.4",
+      effort: "high",
+      network: "disabled" as const,
+    },
     { id: "claude" as const, enabled: true, model: "sonnet" },
   ],
 };
@@ -39,8 +45,28 @@ assert.deepEqual(
   {
     enabled: true,
     providers: [
-      { id: "codex", enabled: false, model: "gpt-5.4", effort: "high" },
+      {
+        id: "codex",
+        enabled: false,
+        model: "gpt-5.4",
+        effort: "high",
+        network: "disabled",
+      },
       { id: "claude", enabled: true, model: "sonnet" },
     ],
+  },
+);
+
+assert.deepEqual(
+  updateOnboardingSubagentsConfig(
+    {
+      enabled: true,
+      providers: [{ id: "codex", enabled: true }],
+    },
+    ["codex"],
+  ),
+  {
+    enabled: true,
+    providers: [{ id: "codex", enabled: true, network: "inherit" }],
   },
 );

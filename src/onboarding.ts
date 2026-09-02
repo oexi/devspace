@@ -44,6 +44,7 @@ export function updateOnboardingSubagentsConfig(
           ...existing,
           id,
           enabled: selected.has(id),
+          ...(id === "codex" ? { network: existing?.network ?? "inherit" } : {}),
         };
       }),
   };
