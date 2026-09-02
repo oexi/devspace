@@ -115,6 +115,7 @@ Subagent providers are explicit. Omitted providers are disabled:
         "enabled": true,
         "model": "gpt-5.4",
         "effort": "high",
+        "network": "inherit",
       },
       {
         "id": "claude",
@@ -129,6 +130,15 @@ Subagent providers are explicit. Omitted providers are disabled:
 Profiles are loaded from `~/.devspace/agents/*.md` and project
 `.devspace/agents/*.md`. `devspace agents targets` prints the configured targets
 available in the current workspace.
+
+For the Codex provider, `network` accepts `inherit`, `enabled`, or `disabled`.
+When omitted, DevSpace uses `inherit`: it selects the requested Codex sandbox
+mode but does not replace that sandbox's network setting, so settings such as
+`[sandbox_workspace_write] network_access = true` in `~/.codex/config.toml`
+continue to apply. `enabled` and `disabled` explicitly override network access
+for restricted Codex sandboxes. A Codex profile may override the provider-level
+value with the same `network` frontmatter field. Other providers reject this
+setting rather than silently ignoring it.
 
 Provider executable discovery remains process-scoped. The supported overrides
 are `CODEX_COMMAND`, `CODEX_HOME`, `CLAUDE_COMMAND`, `CURSOR_COMMAND`,

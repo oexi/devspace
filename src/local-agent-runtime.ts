@@ -3,12 +3,14 @@ import type { AgentProviderError } from "./local-agent-errors.js";
 import type { LocalAgentProvider } from "./local-agent-profiles.js";
 
 export type LocalAgentWriteMode = "read_only" | "allowed" | "full_access";
+export type LocalAgentNetworkMode = "inherit" | "enabled" | "disabled";
 
 export interface LocalAgentRunInput {
   prompt: string;
   workspaceRoot: string;
   providerSessionId?: string;
   writeMode?: LocalAgentWriteMode;
+  networkMode?: LocalAgentNetworkMode;
   model?: string;
   effort?: string;
   modelOverrideRequested?: boolean;

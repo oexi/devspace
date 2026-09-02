@@ -1,5 +1,6 @@
 import type { SubagentsConfig } from "./local-agent-config.js";
 import type { LocalAgentProviderAvailability } from "./local-agent-availability.js";
+import type { LocalAgentNetworkMode } from "./local-agent-runtime.js";
 import {
   LOCAL_AGENT_PROVIDERS,
   type LocalAgentProfile,
@@ -14,6 +15,7 @@ export interface LocalAgentProviderStatus {
   usable: boolean;
   model?: string;
   effort?: string;
+  network?: LocalAgentNetworkMode;
   reason?: string;
   note?: string;
 }
@@ -40,6 +42,7 @@ export function buildLocalAgentProviderStatuses(
       usable: config.enabled && enabled && available,
       model: configured?.model,
       effort: configured?.effort,
+      network: configured?.network,
       reason: live?.reason,
       note: live?.note,
     };
@@ -68,6 +71,7 @@ export function buildLocalAgentCatalog(
           provider: profile.provider,
           model: profile.model ?? provider.model,
           effort: profile.effort ?? provider.effort,
+          network: profile.network ?? provider.network,
         };
       }),
   };

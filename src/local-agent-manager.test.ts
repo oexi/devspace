@@ -28,6 +28,7 @@ const profile: LocalAgentProfile = {
   name: "reviewer",
   description: "Test reviewer",
   provider: "codex",
+  network: "enabled",
   filePath: join(root, "reviewer.md"),
   body: "Review only.",
   disabled: false,
@@ -41,7 +42,7 @@ const disabledProfile: LocalAgentProfile = {
 const subagents: SubagentsConfig = {
   enabled: true,
   providers: [
-    { id: "codex", enabled: true, model: "gpt-default", effort: "medium" },
+    { id: "codex", enabled: true, model: "gpt-default", effort: "medium", network: "disabled" },
     { id: "claude", enabled: true },
   ],
 };
@@ -233,6 +234,7 @@ assert.equal(first.status, "running");
 assert.equal(first.model, "gpt-default");
 assert.equal(first.effort, "medium");
 await waitFor(() => runtimes.get(first.id)?.inputs.length === 1);
+assert.equal(runtimes.get(first.id)?.inputs[0]?.networkMode, "enabled");
 const conflict = await manager.continue(first.id, "another prompt", {}, scope);
 assert.equal(conflict.isErr(), true);
 if (conflict.isErr()) {
@@ -263,6 +265,15 @@ const second = unwrap(await manager.start({
 await waitFor(() => getRecord(second.id).status === "idle");
 assert.notEqual(first.id, second.id);
 assert.equal(runtimes.size, 2, "different agents receive independent logical runtimes");
+
+const rawCodex = unwrap(await manager.start({
+  target: "codex",
+  prompt: "raw codex",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+}));
+await waitFor(() => getRecord(rawCodex.id).status === "idle");
+assert.equal(runtimes.get(rawCodex.id)?.inputs[0]?.networkMode, "disabled");
 
 const failed = unwrap(await manager.start({
   target: "reviewer",

@@ -65,7 +65,15 @@ assert.deepEqual(failed, {
 const catalog: LocalAgentCatalog = {
   enabled: true,
   providers: [
-    { id: "codex", enabled: true, available: true, usable: true, model: "gpt-5.4", effort: "high" },
+    {
+      id: "codex",
+      enabled: true,
+      available: true,
+      usable: true,
+      model: "gpt-5.4",
+      effort: "high",
+      network: "disabled",
+    },
     {
       id: "claude",
       enabled: true,
@@ -80,12 +88,13 @@ const catalog: LocalAgentCatalog = {
     provider: "codex",
     model: "gpt-5.4",
     effort: "high",
+    network: "enabled",
   }],
 };
 const targetCatalog = presentAgentTargetCatalog(catalog);
 assert.deepEqual(targetCatalog, {
   targets: [
-    { name: "codex", kind: "provider", model: "gpt-5.4", effort: "high" },
+    { name: "codex", kind: "provider", model: "gpt-5.4", effort: "high", network: "disabled" },
     {
       name: "reviewer",
       kind: "profile",
@@ -93,6 +102,7 @@ assert.deepEqual(targetCatalog, {
       description: "Review changes.",
       model: "gpt-5.4",
       effort: "high",
+      network: "enabled",
     },
   ],
 });

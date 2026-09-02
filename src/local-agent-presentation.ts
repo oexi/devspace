@@ -1,4 +1,5 @@
 import type { LocalAgentCatalog } from "./local-agent-catalog.js";
+import type { LocalAgentNetworkMode } from "./local-agent-runtime.js";
 import type { LocalAgentRecord, LocalAgentStatus } from "./local-agent-store.js";
 
 export type AgentCommandStatus = "running" | "completed" | "failed" | "stopped";
@@ -9,6 +10,7 @@ export type AgentTargetOutput =
       kind: "provider";
       model?: string;
       effort?: string;
+      network?: LocalAgentNetworkMode;
     }
   | {
       name: string;
@@ -17,6 +19,7 @@ export type AgentTargetOutput =
       description: string;
       model?: string;
       effort?: string;
+      network?: LocalAgentNetworkMode;
     };
 
 export interface AgentTargetCatalogOutput {
@@ -54,6 +57,7 @@ export function presentAgentTargetCatalog(catalog: LocalAgentCatalog): AgentTarg
           kind: "provider",
           ...(provider.model ? { model: provider.model } : {}),
           ...(provider.effort ? { effort: provider.effort } : {}),
+          ...(provider.network ? { network: provider.network } : {}),
         })),
       ...catalog.profiles.map((profile): AgentTargetOutput => ({
         name: profile.name,
@@ -62,6 +66,7 @@ export function presentAgentTargetCatalog(catalog: LocalAgentCatalog): AgentTarg
         description: profile.description,
         ...(profile.model ? { model: profile.model } : {}),
         ...(profile.effort ? { effort: profile.effort } : {}),
+        ...(profile.network ? { network: profile.network } : {}),
       })),
     ],
   };
@@ -103,6 +108,7 @@ export function formatAgentTargetCatalog(catalog: AgentTargetCatalogOutput): str
     const settings = [
       target.model ? `model=${target.model}` : undefined,
       target.effort ? `effort=${target.effort}` : undefined,
+      target.network ? `network=${target.network}` : undefined,
     ].filter(Boolean).join(" ");
     if (target.kind === "provider") {
       return `${target.name} [provider]${settings ? ` ${settings}` : ""}`;

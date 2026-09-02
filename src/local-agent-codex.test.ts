@@ -9,6 +9,7 @@ import {
   parseCodexVersion,
   resolveCodexCommand,
   sandboxFor,
+  sandboxPolicyFor,
 } from "./local-agent-codex.js";
 import { toAgentErrorPayload } from "./local-agent-errors.js";
 
@@ -18,6 +19,22 @@ assert.equal(parseCodexVersion("codex-cli 0.9.1"), "0.9.1");
 assert.equal(sandboxFor("read_only"), "read-only");
 assert.equal(sandboxFor("allowed"), "workspace-write");
 assert.equal(sandboxFor("full_access"), "danger-full-access");
+assert.equal(sandboxPolicyFor("allowed", "inherit"), undefined);
+assert.deepEqual(sandboxPolicyFor("allowed", "enabled"), {
+  type: "workspaceWrite",
+  networkAccess: true,
+});
+assert.deepEqual(sandboxPolicyFor("allowed", "disabled"), {
+  type: "workspaceWrite",
+  networkAccess: false,
+});
+assert.deepEqual(sandboxPolicyFor("read_only", "enabled"), {
+  type: "readOnly",
+  networkAccess: true,
+});
+assert.deepEqual(sandboxPolicyFor("full_access", "disabled"), {
+  type: "dangerFullAccess",
+});
 assert.equal(
   codexCommandEnvironment({ CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "test", PATH: "/tmp/bin" }).CODEX_INTERNAL_ORIGINATOR_OVERRIDE,
   undefined,

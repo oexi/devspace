@@ -9,7 +9,7 @@ import type { SubagentsConfig } from "./local-agent-config.js";
 const config: SubagentsConfig = {
   enabled: true,
   providers: [
-    { id: "codex", enabled: true, model: "gpt-default", effort: "medium" },
+    { id: "codex", enabled: true, model: "gpt-default", effort: "medium", network: "disabled" },
     { id: "claude", enabled: true, model: "sonnet" },
     { id: "pi", enabled: false },
   ],
@@ -20,6 +20,7 @@ const statuses = buildLocalAgentProviderStatuses(config, [
   { name: "pi", available: true },
 ]);
 assert.equal(statuses.find((provider) => provider.id === "codex")?.usable, true);
+assert.equal(statuses.find((provider) => provider.id === "codex")?.network, "disabled");
 assert.equal(statuses.find((provider) => provider.id === "claude")?.usable, false);
 assert.equal(statuses.find((provider) => provider.id === "pi")?.usable, false);
 assert.equal(statuses.find((provider) => provider.id === "opencode")?.enabled, false);
@@ -37,6 +38,7 @@ const profiles: LocalAgentProfile[] = [
     name: "custom",
     description: "Use a custom model.",
     provider: "codex",
+    network: "enabled",
     model: "gpt-custom",
     filePath: "/project/custom.md",
     body: "Inspect.",
@@ -56,4 +58,6 @@ assert.deepEqual(catalog.providers.map((provider) => provider.id), ["codex", "cl
 assert.deepEqual(catalog.profiles.map((profile) => profile.name), ["reviewer", "custom"]);
 assert.equal(catalog.profiles[0]?.model, "gpt-default");
 assert.equal(catalog.profiles[0]?.effort, "medium");
+assert.equal(catalog.profiles[0]?.network, "disabled");
 assert.equal(catalog.profiles[1]?.model, "gpt-custom");
+assert.equal(catalog.profiles[1]?.network, "enabled");

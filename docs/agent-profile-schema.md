@@ -28,6 +28,7 @@ description: Read-only reviewer for bugs, security risks, and missing tests.
 provider: codex
 model: gpt-5.4
 effort: high
+network: inherit
 disabled: false
 ---
 
@@ -123,6 +124,30 @@ DevSpace passes this through to providers that expose a matching control:
 - `cursor` and `copilot`: ACP thought-level config when supported.
 - `grok`: `--reasoning-effort` on startup and xAI's ACP model metadata for resumed sessions.
 
+### `network`
+
+Optional Codex network policy:
+
+```yaml
+network: inherit
+network: enabled
+network: disabled
+```
+
+`inherit` is the effective default. DevSpace selects the Codex sandbox mode but
+does not send a turn-level network override, so the corresponding setting in
+`~/.codex/config.toml` remains authoritative. For example:
+
+```toml
+[sandbox_workspace_write]
+network_access = true
+```
+
+`enabled` or `disabled` explicitly overrides direct network access for
+restricted Codex sandboxes. The profile value overrides the Codex provider
+default in `~/.devspace/config.jsonc`. This field is rejected for non-Codex
+profiles so a network policy cannot appear to work when the provider ignores it.
+
 ### `disabled`
 
 Optional boolean. Disabled profiles are not exposed.
@@ -163,7 +188,8 @@ devspace agents show <id> --json
   "description": "Read-only reviewer for bugs, security risks, and missing tests.",
   "provider": "codex",
   "model": "gpt-5.4",
-  "effort": "high"
+  "effort": "high",
+  "network": "inherit"
 }
 ```
 

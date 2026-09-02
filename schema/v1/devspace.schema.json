@@ -192,6 +192,14 @@
               "effort": {
                 "type": "string",
                 "minLength": 1
+              },
+              "network": {
+                "type": "string",
+                "enum": [
+                  "inherit",
+                  "enabled",
+                  "disabled"
+                ]
               }
             },
             "required": [

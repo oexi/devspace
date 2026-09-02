@@ -33,6 +33,7 @@ import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import { assertAllowedPath } from "./roots.js";
 import {
   isSubagentProviderEnabled,
+  subagentProviderConfig,
   type SubagentsConfig,
 } from "./local-agent-config.js";
 
@@ -418,11 +419,17 @@ export class LocalAgentManager {
     }
     const body = profile?.body.trim();
     const fullPrompt = body ? `${body}\n\nTask:\n${prompt}` : prompt;
+    const providerConfig = isLocalAgentProvider(record.provider)
+      ? subagentProviderConfig(this.subagents, record.provider)
+      : undefined;
     return Result.ok({
       prompt: fullPrompt,
       workspaceRoot: record.workspaceRoot,
       providerSessionId: record.providerSessionId,
       writeMode: overrides.writeMode ?? "allowed",
+      ...(record.provider === "codex"
+        ? { networkMode: profile?.network ?? providerConfig?.network ?? "inherit" }
+        : {}),
       model: record.model ?? profile?.model,
       effort: record.effort ?? profile?.effort,
       modelOverrideRequested: overrides.model !== undefined,

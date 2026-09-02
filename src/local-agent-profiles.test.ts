@@ -50,6 +50,7 @@ try {
       "name: disabled",
       "description: Disabled agent.",
       "provider: codex",
+      "network: disabled",
       "disabled: true",
       "---",
       "",
@@ -71,6 +72,8 @@ try {
   assert.equal(profiles[0]?.model, "sonnet");
   assert.equal(profiles[0]?.effort, "high");
   assert.equal(profiles[0]?.body, "Project body.");
+  const allProfiles = await loadLocalAgentProfiles(enabledConfig, workspaceRoot, { includeDisabled: true });
+  assert.equal(allProfiles.find((profile) => profile.name === "disabled")?.network, "disabled");
   await writeFile(
     join(workspaceRoot, ".devspace", "agents", "custom.md"),
     [

@@ -3,12 +3,20 @@ import {
   LOCAL_AGENT_PROVIDERS,
   type LocalAgentProvider,
 } from "./local-agent-profiles.js";
+import type { LocalAgentNetworkMode } from "./local-agent-runtime.js";
+
+const NETWORK_MODES: [LocalAgentNetworkMode, ...LocalAgentNetworkMode[]] = [
+  "inherit",
+  "enabled",
+  "disabled",
+];
 
 const providerSchema = z.object({
   id: z.enum(LOCAL_AGENT_PROVIDERS as [LocalAgentProvider, ...LocalAgentProvider[]]),
   enabled: z.boolean(),
   model: z.string().trim().min(1).optional(),
   effort: z.string().trim().min(1).optional(),
+  network: z.enum(NETWORK_MODES).optional(),
 }).strict();
 
 export const subagentsConfigSchema = z.object({
@@ -17,6 +25,13 @@ export const subagentsConfigSchema = z.object({
 }).strict().superRefine((value, context) => {
   const seen = new Set<LocalAgentProvider>();
   for (const [index, provider] of value.providers.entries()) {
+    if (provider.network !== undefined && provider.id !== "codex") {
+      context.addIssue({
+        code: "custom",
+        path: ["providers", index, "network"],
+        message: "Subagent network policy is currently supported only for the codex provider.",
+      });
+    }
     if (seen.has(provider.id)) {
       context.addIssue({
         code: "custom",

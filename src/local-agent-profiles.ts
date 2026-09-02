@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ServerConfig } from "./config.js";
+import type { LocalAgentNetworkMode } from "./local-agent-runtime.js";
 
 export type LocalAgentProvider = "codex" | "claude" | "opencode" | "pi" | "cursor" | "copilot" | "grok";
 
@@ -22,6 +23,7 @@ export interface LocalAgentProfile {
   provider: LocalAgentProvider;
   model?: string;
   effort?: string;
+  network?: LocalAgentNetworkMode;
   filePath: string;
   body: string;
   disabled: boolean;
@@ -33,6 +35,7 @@ export interface LocalAgentProfileSummary {
   provider: LocalAgentProvider;
   model?: string;
   effort?: string;
+  network?: LocalAgentNetworkMode;
 }
 
 interface ParsedFrontmatter {
@@ -148,10 +151,28 @@ function profileFromFrontmatter(
     provider,
     model: readString(frontmatter, "model"),
     effort: readString(frontmatter, "effort"),
+    network: readNetworkMode(frontmatter, provider, filePath),
     filePath,
     body,
     disabled: frontmatter.disabled === true,
   };
+}
+
+function readNetworkMode(
+  frontmatter: Record<string, unknown>,
+  provider: LocalAgentProvider,
+  filePath: string,
+): LocalAgentNetworkMode | undefined {
+  const value = frontmatter.network;
+  if (value === undefined) return undefined;
+  if (provider !== "codex") {
+    throw new Error(`Subagent profile network policy is currently supported only for codex: ${filePath}`);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "inherit" || trimmed === "enabled" || trimmed === "disabled") return trimmed;
+  }
+  throw new Error(`Subagent profile network must be inherit, enabled, or disabled: ${filePath}`);
 }
 
 function readProvider(frontmatter: Record<string, unknown>, filePath: string): LocalAgentProvider {

@@ -462,11 +462,12 @@ function threadParams(input: LocalAgentRunInput): Record<string, unknown> {
 }
 
 function turnParams(input: LocalAgentRunInput, threadId: string): Record<string, unknown> {
+  const sandboxPolicy = sandboxPolicyFor(input.writeMode, input.networkMode);
   return {
     threadId,
     input: [{ type: "text", text: input.prompt }],
     approvalPolicy: "never",
-    sandboxPolicy: sandboxPolicyFor(input.writeMode),
+    ...(sandboxPolicy ? { sandboxPolicy } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
   };
@@ -481,12 +482,17 @@ export function sandboxFor(writeMode: LocalAgentWriteMode | undefined): string {
   }
 }
 
-function sandboxPolicyFor(writeMode: LocalAgentWriteMode | undefined): Record<string, string> {
+export function sandboxPolicyFor(
+  writeMode: LocalAgentWriteMode | undefined,
+  networkMode: LocalAgentRunInput["networkMode"] = "inherit",
+): Record<string, unknown> | undefined {
+  if (networkMode === "inherit") return undefined;
+  const networkAccess = networkMode === "enabled";
   switch (writeMode) {
-    case "allowed": return { type: "workspaceWrite" };
+    case "allowed": return { type: "workspaceWrite", networkAccess };
     case "full_access": return { type: "dangerFullAccess" };
     case "read_only":
-    case undefined: return { type: "readOnly" };
+    case undefined: return { type: "readOnly", networkAccess };
   }
 }
 
