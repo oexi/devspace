@@ -12,6 +12,7 @@ import type { ServerConfig } from "./config.js";
 import { createManagedWorktree } from "./git-worktrees.js";
 import {
   AccessDeniedError,
+  expandHomePath,
   isPathInsideRoot,
   resolveConfinedPath,
 } from "./roots.js";
@@ -311,7 +312,7 @@ export class WorkspaceRegistry {
   async resolveReadPath(workspace: Workspace, inputPath: string): Promise<WorkspaceReadPath> {
     try {
       return {
-        absolutePath: await this.resolvePath(workspace, inputPath),
+        absolutePath: await this.resolvePath(workspace, expandHomePath(inputPath)),
         readRoots: [workspace.root],
       };
     } catch (workspaceError) {

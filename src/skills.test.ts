@@ -10,6 +10,8 @@ import {
   loadWorkspaceSkills,
   resolveSkillReadPath,
 } from "./skills.js";
+import { readFileTool } from "./pi-tools.js";
+import { WorkspaceRegistry } from "./workspaces.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-skills-test-"));
@@ -236,6 +238,44 @@ try {
   const skillFileRead = await resolveSkillReadPath(loaded.skills, new Set(), projectSkill.filePath);
   assert.equal(skillFileRead?.isSkillFile, true);
   assert.equal(skillFileRead?.absolutePath, projectSkill.filePath);
+
+  const registry = new WorkspaceRegistry(config);
+  const opened = await registry.openWorkspace(projectRoot);
+  const advertisedSkill = opened.workspace.skills.find(
+    (skill) => skill.name === "agent-global-skill",
+  );
+  assert.ok(advertisedSkill);
+  const advertisedPath = formatPathForPrompt(advertisedSkill.filePath);
+  assert.match(advertisedPath, /^~\//);
+  const advertisedReadPath = await registry.resolveReadPath(
+    opened.workspace,
+    advertisedPath,
+  );
+  assert.equal(advertisedReadPath.absolutePath, advertisedSkill.filePath);
+  const advertisedRead = await readFileTool(
+    { path: advertisedReadPath.absolutePath },
+    {
+      cwd: opened.workspace.root,
+      root: opened.workspace.root,
+      readRoots: advertisedReadPath.readRoots,
+    },
+  );
+  assert.equal(advertisedRead.isError, undefined);
+  assert.match(JSON.stringify(advertisedRead.content), /# Agent Global Skill/);
+
+  const homeSecretPath = join(root, "private", "secret.txt");
+  await mkdir(join(root, "private"), { recursive: true });
+  await writeFile(homeSecretPath, "home secret\n");
+  const unadvertisedPath = "~/private/secret.txt";
+  assert.equal(formatPathForPrompt(homeSecretPath), unadvertisedPath);
+  assert.equal(
+    await resolveSkillReadPath(loaded.skills, new Set(), unadvertisedPath),
+    undefined,
+  );
+  await assert.rejects(
+    () => registry.resolveReadPath(opened.workspace, unadvertisedPath),
+    /outside workspace root/,
+  );
 
   const resourcePath = join(projectSkill.baseDir, "references.md");
   await writeFile(resourcePath, "reference\n");
