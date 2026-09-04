@@ -48,6 +48,18 @@ test("tool modes expose the expected host-facing tool surface", async (t) => {
   }
 });
 
+test("server and open_workspace schema expose configured workspace roots", async (t) => {
+  const context = await fixture(t, { uiEnabled: false });
+  const expectedRoot = context.project.replace(/\/project$/, "");
+
+  assert.match(context.client.getInstructions() ?? "", new RegExp(`configured workspace root is ${escapeRegExp(expectedRoot)}`));
+
+  const tools = await context.client.listTools();
+  const openWorkspace = tools.tools.find((tool) => tool.name === "open_workspace");
+  const pathSchema = openWorkspace?.inputSchema?.properties?.path as { description?: string } | undefined;
+  assert.match(pathSchema?.description ?? "", new RegExp(`Configured roots: ${escapeRegExp(expectedRoot)}`));
+});
+
 test("UI metadata is limited to workspace and aggregate review", async (t) => {
   for (const uiEnabled of [true, false]) {
     await t.test(uiEnabled ? "enabled" : "disabled", async (nested) => {
@@ -427,4 +439,8 @@ function responseCard(result: Awaited<ReturnType<Client["callTool"]>>): Record<s
   const card = (metadata as Record<string, unknown>).card;
   assert.ok(card && typeof card === "object");
   return card as Record<string, unknown>;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

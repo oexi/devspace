@@ -107,7 +107,11 @@ function serverInstructions(
     ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
     : "";
   const agents = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
-  const common = `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected.`;
+  const workspaceRoots = config.allowedRoots.map(formatPathForPrompt);
+  const workspaceRootInstruction = workspaceRoots.length === 1
+    ? ` The configured workspace root is ${workspaceRoots[0]}. When the user refers to a project or workspace by name without an explicit path, resolve it relative to this root.`
+    : ` Configured workspace roots are ${workspaceRoots.join(", ")}. When the user refers to a project or workspace by name without an explicit path, resolve it against these roots.`;
+  const common = `Use DevSpace for coding work.${workspaceRootInstruction} Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected.`;
 
   return `${common} ${toolSurface.instructions({ agents, skills })}${artifactInstruction}${showChangesInstruction}`;
 }
@@ -342,7 +346,7 @@ export function createMcpServer(
         path: z
           .string()
           .describe(
-            "Absolute path, or a leading-tilde home path such as ~/project, to a project directory inside an allowed root.",
+            `Absolute path, or a leading-tilde home path such as ~/project, to a project directory inside an allowed root. Configured roots: ${config.allowedRoots.map(formatPathForPrompt).join(", ")}.`,
           ),
         mode: z
           .enum(["checkout", "worktree"])
