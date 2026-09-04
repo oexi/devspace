@@ -4,6 +4,13 @@ import { InvalidRequestError } from "@modelcontextprotocol/sdk/server/auth/error
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 
+const DEFAULT_TOKEN_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+
+export interface SqliteOAuthStoreOptions {
+  now?: () => number;
+  tokenCleanupIntervalMs?: number;
+}
+
 export interface PersistedAccessTokenRecord {
   clientId: string;
   scopes: string[];
@@ -39,10 +46,20 @@ function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boole
 
 export class SqliteOAuthStore {
   private readonly database: DatabaseHandle;
+  private readonly now: () => number;
+  private readonly tokenCleanupIntervalMs: number;
+  private lastTokenCleanupAtMs?: number;
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, options: SqliteOAuthStoreOptions = {}) {
+    this.now = options.now ?? Date.now;
+    this.tokenCleanupIntervalMs = nonNegativeFiniteDuration(
+      options.tokenCleanupIntervalMs ?? DEFAULT_TOKEN_CLEANUP_INTERVAL_MS,
+      "OAuth token cleanup interval",
+    );
     this.database = openDatabase(stateDir);
-    this.deleteExpiredTokens(Math.floor(Date.now() / 1000));
+    const nowMs = this.now();
+    this.deleteExpiredTokens(Math.floor(nowMs / 1000));
+    this.lastTokenCleanupAtMs = nowMs;
   }
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {
@@ -61,7 +78,7 @@ export class SqliteOAuthStore {
       throw new InvalidRequestError("Client redirect_uri is not allowed for this DevSpace server");
     }
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = this.nowSeconds();
     const registered: OAuthClientInformationFull = {
       ...client,
       client_id: `devspace-${randomUUID()}`,
@@ -79,6 +96,11 @@ export class SqliteOAuthStore {
   }
 
   saveAccessToken(tokenHash: string, record: PersistedAccessTokenRecord): void {
+    this.maybeDeleteExpiredTokens();
+    this.saveAccessTokenRecord(tokenHash, record);
+  }
+
+  private saveAccessTokenRecord(tokenHash: string, record: PersistedAccessTokenRecord): void {
     this.database.sqlite
       .prepare(
         `insert into oauth_access_tokens (token_hash, client_id, scopes_json, expires_at, resource)
@@ -99,6 +121,7 @@ export class SqliteOAuthStore {
   }
 
   getAccessToken(tokenHash: string): PersistedAccessTokenRecord | undefined {
+    this.maybeDeleteExpiredTokens();
     const row = this.database.sqlite
       .prepare(
         "select client_id, scopes_json, expires_at, resource from oauth_access_tokens where token_hash = ?",
@@ -116,10 +139,16 @@ export class SqliteOAuthStore {
   }
 
   deleteAccessToken(tokenHash: string): void {
+    this.maybeDeleteExpiredTokens();
     this.database.sqlite.prepare("delete from oauth_access_tokens where token_hash = ?").run(tokenHash);
   }
 
   saveRefreshToken(tokenHash: string, record: PersistedRefreshTokenRecord): void {
+    this.maybeDeleteExpiredTokens();
+    this.saveRefreshTokenRecord(tokenHash, record);
+  }
+
+  private saveRefreshTokenRecord(tokenHash: string, record: PersistedRefreshTokenRecord): void {
     this.database.sqlite
       .prepare(
         `insert into oauth_refresh_tokens (token_hash, client_id, scopes_json, expires_at, resource)
@@ -140,6 +169,7 @@ export class SqliteOAuthStore {
   }
 
   saveTokenPair(pair: PersistedTokenPair, consumedRefreshTokenHash?: string): boolean {
+    this.maybeDeleteExpiredTokens();
     const save = this.database.sqlite.transaction(() => {
       if (consumedRefreshTokenHash) {
         const result = this.database.sqlite
@@ -148,8 +178,8 @@ export class SqliteOAuthStore {
         if (result.changes !== 1) return false;
       }
 
-      this.saveAccessToken(pair.accessTokenHash, pair.accessToken);
-      this.saveRefreshToken(pair.refreshTokenHash, pair.refreshToken);
+      this.saveAccessTokenRecord(pair.accessTokenHash, pair.accessToken);
+      this.saveRefreshTokenRecord(pair.refreshTokenHash, pair.refreshToken);
       return true;
     });
 
@@ -157,6 +187,7 @@ export class SqliteOAuthStore {
   }
 
   getRefreshToken(tokenHash: string): PersistedRefreshTokenRecord | undefined {
+    this.maybeDeleteExpiredTokens();
     const row = this.database.sqlite
       .prepare(
         "select client_id, scopes_json, expires_at, resource from oauth_refresh_tokens where token_hash = ?",
@@ -174,6 +205,7 @@ export class SqliteOAuthStore {
   }
 
   deleteRefreshToken(tokenHash: string): void {
+    this.maybeDeleteExpiredTokens();
     this.database.sqlite.prepare("delete from oauth_refresh_tokens where token_hash = ?").run(tokenHash);
   }
 
@@ -181,9 +213,28 @@ export class SqliteOAuthStore {
     this.database.close();
   }
 
+  private nowSeconds(): number {
+    return Math.floor(this.now() / 1000);
+  }
+
+  private maybeDeleteExpiredTokens(): void {
+    const nowMs = this.now();
+    const lastCleanupAtMs = this.lastTokenCleanupAtMs;
+    if (
+      lastCleanupAtMs !== undefined &&
+      nowMs >= lastCleanupAtMs &&
+      nowMs - lastCleanupAtMs < this.tokenCleanupIntervalMs
+    ) {
+      return;
+    }
+
+    this.deleteExpiredTokens(Math.floor(nowMs / 1000));
+    this.lastTokenCleanupAtMs = nowMs;
+  }
+
   private deleteExpiredTokens(nowSeconds: number): void {
-    this.database.sqlite.prepare("delete from oauth_access_tokens where expires_at < ?").run(nowSeconds);
-    this.database.sqlite.prepare("delete from oauth_refresh_tokens where expires_at < ?").run(nowSeconds);
+    this.database.sqlite.prepare("delete from oauth_access_tokens where expires_at <= ?").run(nowSeconds);
+    this.database.sqlite.prepare("delete from oauth_refresh_tokens where expires_at <= ?").run(nowSeconds);
   }
 }
 
@@ -230,4 +281,11 @@ function rowToRefreshTokenRecord(row: {
     expiresAt: row.expires_at,
     resource: row.resource ?? undefined,
   };
+}
+
+function nonNegativeFiniteDuration(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative finite duration.`);
+  }
+  return value;
 }

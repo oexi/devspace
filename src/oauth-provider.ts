@@ -27,6 +27,14 @@ interface AuthorizationCodeRecord {
 }
 
 const CODE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_AUTHORIZATION_CODE_CLEANUP_INTERVAL_MS = 60 * 1000;
+const AUTHORIZATION_CODE_CLEANUP_BATCH_SIZE = 100;
+
+export interface SingleUserOAuthProviderOptions {
+  now?: () => number;
+  authorizationCodeCleanupIntervalMs?: number;
+  tokenCleanupIntervalMs?: number;
+}
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
@@ -116,14 +124,27 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   private readonly codes = new Map<string, AuthorizationCodeRecord>();
   private readonly oauthStore: SqliteOAuthStore;
   private readonly resourceServerUrl: URL;
+  private readonly now: () => number;
+  private readonly authorizationCodeCleanupIntervalMs: number;
+  private lastAuthorizationCodeCleanupAtMs?: number;
+  private authorizationCodeCleanupIterator?: Iterator<[string, AuthorizationCodeRecord]>;
 
   constructor(
     private readonly config: OAuthConfig,
     resourceServerUrl: URL,
     stateDir: string,
+    options: SingleUserOAuthProviderOptions = {},
   ) {
+    this.now = options.now ?? Date.now;
+    this.authorizationCodeCleanupIntervalMs = nonNegativeFiniteDuration(
+      options.authorizationCodeCleanupIntervalMs ?? DEFAULT_AUTHORIZATION_CODE_CLEANUP_INTERVAL_MS,
+      "OAuth authorization code cleanup interval",
+    );
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
-    this.oauthStore = new SqliteOAuthStore(stateDir);
+    this.oauthStore = new SqliteOAuthStore(stateDir, {
+      now: this.now,
+      tokenCleanupIntervalMs: options.tokenCleanupIntervalMs,
+    });
     this.clientsStore = new SqliteOAuthClientsStore(this.oauthStore, config.allowedRedirectHosts);
   }
 
@@ -132,6 +153,8 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
+    const nowMs = this.now();
+    this.maybeCleanupExpiredAuthorizationCodes(nowMs);
     if (!params.resource || !checkResourceAllowed({ requestedResource: params.resource, configuredResource: this.resourceServerUrl })) {
       throw new InvalidRequestError("Invalid or missing OAuth resource");
     }
@@ -168,10 +191,11 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     }
 
     const code = `code-${randomUUID()}`;
+    const codeIssuedAtMs = this.now();
     this.codes.set(code, {
       clientId: client.client_id,
       params,
-      expiresAtMs: Date.now() + CODE_TTL_MS,
+      expiresAtMs: codeIssuedAtMs + CODE_TTL_MS,
     });
 
     const redirectUrl = new URL(params.redirectUri);
@@ -213,9 +237,11 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     scopes?: string[],
     resource?: URL,
   ): Promise<OAuthTokens> {
+    const nowMs = this.now();
+    this.maybeCleanupExpiredAuthorizationCodes(nowMs);
     const refreshTokenHash = hashToken(refreshToken);
     const record = this.oauthStore.getRefreshToken(refreshTokenHash);
-    if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
+    if (!record || record.clientId !== client.client_id || record.expiresAt <= this.nowSeconds()) {
       throw new InvalidGrantError("Invalid refresh token");
     }
     if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
@@ -236,8 +262,10 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
+    const nowMs = this.now();
+    this.maybeCleanupExpiredAuthorizationCodes(nowMs);
     const record = this.oauthStore.getAccessToken(hashToken(token));
-    if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
+    if (!record || record.expiresAt <= this.nowSeconds()) {
       throw new InvalidTokenError("Invalid or expired access token");
     }
 
@@ -251,6 +279,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
+    this.maybeCleanupExpiredAuthorizationCodes(this.now());
     const hashed = hashToken(request.token);
     this.oauthStore.deleteAccessToken(hashed);
     this.oauthStore.deleteRefreshToken(hashed);
@@ -264,8 +293,13 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     authorizationCode: string,
   ): AuthorizationCodeRecord {
+    const nowMs = this.now();
+    this.maybeCleanupExpiredAuthorizationCodes(nowMs);
     const record = this.codes.get(authorizationCode);
-    if (!record || record.clientId !== client.client_id || record.expiresAtMs < Date.now()) {
+    if (!record || record.clientId !== client.client_id || record.expiresAtMs <= nowMs) {
+      if (record && record.expiresAtMs <= nowMs) {
+        this.codes.delete(authorizationCode);
+      }
       throw new InvalidGrantError("Invalid authorization code");
     }
     return record;
@@ -277,7 +311,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     resource?: URL,
     consumedRefreshTokenHash?: string,
   ): OAuthTokens {
-    const now = Math.floor(Date.now() / 1000);
+    const now = this.nowSeconds();
     const accessToken = randomToken();
     const refreshToken = randomToken();
     const accessExpiresAt = now + this.config.accessTokenTtlSeconds;
@@ -314,6 +348,45 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       scope: scopes.join(" "),
     };
   }
+
+  private nowSeconds(): number {
+    return Math.floor(this.now() / 1000);
+  }
+
+  private maybeCleanupExpiredAuthorizationCodes(nowMs: number): void {
+    const lastCleanupAtMs = this.lastAuthorizationCodeCleanupAtMs;
+    if (
+      lastCleanupAtMs !== undefined &&
+      nowMs >= lastCleanupAtMs &&
+      nowMs - lastCleanupAtMs < this.authorizationCodeCleanupIntervalMs
+    ) {
+      return;
+    }
+
+    this.cleanupExpiredAuthorizationCodes(nowMs);
+    this.lastAuthorizationCodeCleanupAtMs = nowMs;
+  }
+
+  private cleanupExpiredAuthorizationCodes(nowMs: number): void {
+    if (this.codes.size === 0) {
+      this.authorizationCodeCleanupIterator = undefined;
+      return;
+    }
+
+    const iterator = this.authorizationCodeCleanupIterator ?? this.codes.entries();
+    for (let inspected = 0; inspected < AUTHORIZATION_CODE_CLEANUP_BATCH_SIZE; inspected += 1) {
+      const next = iterator.next();
+      if (next.done) {
+        this.authorizationCodeCleanupIterator = undefined;
+        return;
+      }
+
+      const [code, record] = next.value;
+      if (record.expiresAtMs <= nowMs) this.codes.delete(code);
+    }
+
+    this.authorizationCodeCleanupIterator = iterator;
+  }
 }
 
 function authorizationFormFields(
@@ -334,4 +407,11 @@ function authorizationFormFields(
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("base64url");
+}
+
+function nonNegativeFiniteDuration(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative finite duration.`);
+  }
+  return value;
 }

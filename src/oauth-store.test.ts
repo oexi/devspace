@@ -23,7 +23,10 @@ try {
   await testDatabaseConfiguration(join(root, "database-configuration"));
   testPersistenceAndTokenHashing(join(root, "persistence"));
   testExpiredTokenCleanup(join(root, "expiration"));
+  testTokenCleanupCadence(join(root, "token-cleanup-cadence"));
   testTransactionalTokenRotation(join(root, "rotation"));
+  await testAuthorizationCodeCleanup(join(root, "authorization-code-cleanup"));
+  await testTokenExpirationBoundary(join(root, "expiration-boundary"));
   await testProviderRestartRotationAndRevocation(join(root, "provider"));
 } finally {
   await rm(root, { recursive: true, force: true });
@@ -135,6 +138,146 @@ function testExpiredTokenCleanup(stateDir: string): void {
     assert.equal(reopened.getRefreshToken("expired-refresh-hash"), undefined);
   } finally {
     reopened.close();
+  }
+}
+
+function testTokenCleanupCadence(stateDir: string): void {
+  let nowMs = 2_000_000;
+  const store = new SqliteOAuthStore(stateDir, {
+    now: () => nowMs,
+    tokenCleanupIntervalMs: 1_000,
+  });
+  try {
+    const client = new SqliteOAuthClientsStore(store, oauthConfig.allowedRedirectHosts).registerClient({
+      redirect_uris: [redirectUri],
+    });
+    const expiresAt = Math.floor(nowMs / 1000);
+    store.saveTokenPair({
+      accessTokenHash: "cadence-access-hash",
+      accessToken: { clientId: client.client_id, scopes: ["devspace"], expiresAt },
+      refreshTokenHash: "cadence-refresh-hash",
+      refreshToken: { clientId: client.client_id, scopes: ["devspace"], expiresAt },
+    });
+
+    assert.ok(store.getAccessToken("cadence-access-hash"));
+    assert.ok(store.getRefreshToken("cadence-refresh-hash"));
+
+    nowMs += 999;
+    assert.ok(store.getAccessToken("cadence-access-hash"));
+    assert.ok(store.getRefreshToken("cadence-refresh-hash"));
+
+    nowMs += 1;
+    assert.equal(store.getAccessToken("cadence-access-hash"), undefined);
+    assert.equal(store.getRefreshToken("cadence-refresh-hash"), undefined);
+  } finally {
+    store.close();
+  }
+}
+
+async function testAuthorizationCodeCleanup(stateDir: string): Promise<void> {
+  let nowMs = 1_000_000;
+  const provider = new SingleUserOAuthProvider(oauthConfig, mcpUrl, stateDir, {
+    now: () => nowMs,
+    authorizationCodeCleanupIntervalMs: 1_000,
+  });
+  try {
+    const client = await provider.clientsStore.registerClient?.({
+      redirect_uris: [redirectUri],
+    });
+    assert.ok(client);
+
+    const params = {
+      redirectUri,
+      codeChallenge: "challenge",
+      scopes: ["devspace"],
+      resource: mcpUrl,
+    };
+    const codes = provider["codes"];
+    codes.set("expired-before-sweep", {
+      clientId: client.client_id,
+      params,
+      expiresAtMs: nowMs - 1,
+    });
+    codes.set("live", {
+      clientId: client.client_id,
+      params,
+      expiresAtMs: nowMs + 10_000,
+    });
+
+    await provider.challengeForAuthorizationCode(client, "live");
+    assert.equal(codes.has("expired-before-sweep"), false);
+
+    nowMs += 500;
+    codes.set("expired-during-cadence", {
+      clientId: client.client_id,
+      params,
+      expiresAtMs: nowMs - 1,
+    });
+    await provider.challengeForAuthorizationCode(client, "live");
+    assert.equal(codes.has("expired-during-cadence"), true);
+
+    nowMs += 500;
+    await provider.challengeForAuthorizationCode(client, "live");
+    assert.equal(codes.has("expired-during-cadence"), false);
+
+    codes.set("expires-at-boundary", {
+      clientId: client.client_id,
+      params,
+      expiresAtMs: nowMs + 500,
+    });
+    nowMs += 500;
+    await assert.rejects(
+      provider.challengeForAuthorizationCode(client, "expires-at-boundary"),
+      InvalidGrantError,
+    );
+    assert.equal(codes.has("expires-at-boundary"), false);
+  } finally {
+    provider.close();
+  }
+}
+
+async function testTokenExpirationBoundary(stateDir: string): Promise<void> {
+  let nowMs = 3_000_000;
+  const provider = new SingleUserOAuthProvider(oauthConfig, mcpUrl, stateDir, {
+    now: () => nowMs,
+    tokenCleanupIntervalMs: 1_000_000_000,
+  });
+  try {
+    const client = await provider.clientsStore.registerClient?.({
+      redirect_uris: [redirectUri],
+    });
+    assert.ok(client);
+
+    provider["codes"].set("expiration-boundary-code", {
+      clientId: client.client_id,
+      params: {
+        redirectUri,
+        codeChallenge: "challenge",
+        scopes: ["devspace"],
+        resource: mcpUrl,
+      },
+      expiresAtMs: nowMs + 60_000,
+    });
+    const issued = await provider.exchangeAuthorizationCode(
+      client,
+      "expiration-boundary-code",
+      undefined,
+      redirectUri,
+      mcpUrl,
+    );
+    assert.ok(issued.refresh_token);
+    const issuedAtSeconds = Math.floor(nowMs / 1000);
+
+    nowMs = (issuedAtSeconds + oauthConfig.accessTokenTtlSeconds) * 1000;
+    await assert.rejects(provider.verifyAccessToken(issued.access_token), InvalidTokenError);
+
+    nowMs = (issuedAtSeconds + oauthConfig.refreshTokenTtlSeconds) * 1000;
+    await assert.rejects(
+      provider.exchangeRefreshToken(client, issued.refresh_token, ["devspace"], mcpUrl),
+      InvalidGrantError,
+    );
+  } finally {
+    provider.close();
   }
 }
 
