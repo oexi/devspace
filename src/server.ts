@@ -46,6 +46,10 @@ import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
 import {
+  cleanupWorkspaceLifecycle,
+  WORKSPACE_CLEANUP_INTERVAL_MS,
+} from "./workspace-lifecycle.js";
+import {
   getLocalAgentProviderAvailabilitySnapshot,
 } from "./local-agent-availability.js";
 import {
@@ -745,6 +749,37 @@ export function createServer(
     getLocalAgentProviderAvailabilitySnapshot(),
   );
 
+  let workspaceCleanupPromise: Promise<void> | undefined;
+  const runWorkspaceCleanup = (): Promise<void> => {
+    if (workspaceCleanupPromise) return workspaceCleanupPromise;
+
+    const cleanup: Promise<void> = cleanupWorkspaceLifecycle({
+      config,
+      store: workspaceStore,
+      registry: workspaces,
+      reviewCheckpoints,
+      protectedWorkspaceIds: processSessions.activeWorkspaceIds(),
+    })
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        logEvent(config.logging, "warn", "workspace_cleanup_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    let trackedCleanup: Promise<void>;
+    trackedCleanup = cleanup.finally(() => {
+      if (workspaceCleanupPromise === trackedCleanup) workspaceCleanupPromise = undefined;
+    });
+    workspaceCleanupPromise = trackedCleanup;
+    return trackedCleanup;
+  };
+
+  void runWorkspaceCleanup();
+  const workspaceCleanupTimer = setInterval(() => {
+    void runWorkspaceCleanup();
+  }, WORKSPACE_CLEANUP_INTERVAL_MS);
+  workspaceCleanupTimer.unref();
+
   const logSessionCloseResults = (
     reason: "idle_timeout" | "server_shutdown",
     results: McpSessionCloseResult[],
@@ -932,6 +967,8 @@ export function createServer(
     close: () => {
       closePromise ??= (async () => {
         clearInterval(sessionCleanupTimer);
+        clearInterval(workspaceCleanupTimer);
+        await workspaceCleanupPromise;
         const results = await transports.closeAll();
         logSessionCloseResults("server_shutdown", results);
         await processSessions.shutdown();

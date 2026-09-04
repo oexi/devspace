@@ -8,11 +8,12 @@ import {
 } from "./db/schema.js";
 
 export type WorkspaceMode = "checkout" | "worktree";
+export type WorkspaceSessionStatus = "active" | "inactive";
 
 export interface WorkspaceSession {
   id: string;
   root: string;
-  status: string;
+  status: WorkspaceSessionStatus;
   mode: WorkspaceMode;
   sourceRoot?: string;
   baseRef?: string;
@@ -42,6 +43,16 @@ export interface WorkspaceStore {
   }): WorkspaceSession;
   getSession(id: string): WorkspaceSession | undefined;
   touchSession(id: string): void;
+  findStaleSessions(
+    inactiveBefore: string,
+    protectedWorkspaceIds?: Iterable<string>,
+  ): WorkspaceSession[];
+  retireStaleSessions(
+    inactiveBefore: string,
+    protectedWorkspaceIds?: Iterable<string>,
+  ): WorkspaceSession[];
+  findInactiveSessions(): WorkspaceSession[];
+  deleteInactiveSessions(ids: readonly string[]): void;
   getConversationBinding(
     conversationScopeId: string,
     targetKey: string,
@@ -119,8 +130,78 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.database.db
       .update(workspaceSessions)
       .set({ lastUsedAt: new Date().toISOString() })
-      .where(eq(workspaceSessions.id, id))
+      .where(and(eq(workspaceSessions.id, id), eq(workspaceSessions.status, "active")))
       .run();
+  }
+
+  findStaleSessions(
+    inactiveBefore: string,
+    protectedWorkspaceIds: Iterable<string> = [],
+  ): WorkspaceSession[] {
+    return this.findStaleSessionRows(
+      inactiveBefore,
+      new Set(protectedWorkspaceIds),
+    ).map(rowToWorkspaceSession);
+  }
+
+  retireStaleSessions(
+    inactiveBefore: string,
+    protectedWorkspaceIds: Iterable<string> = [],
+  ): WorkspaceSession[] {
+    const protectedIds = new Set(protectedWorkspaceIds);
+    const retire = this.database.db.transaction(() => {
+      this.deleteBindingsForInactiveSessions();
+      const stale = this.findStaleSessionRows(inactiveBefore, protectedIds).map(rowToWorkspaceSession);
+      if (stale.length === 0) return stale;
+
+      for (const session of stale) {
+        this.database.db
+          .update(workspaceSessions)
+          .set({ status: "inactive", lastUsedAt: session.lastUsedAt })
+          .where(
+            and(
+              eq(workspaceSessions.id, session.id),
+              eq(workspaceSessions.status, "active"),
+            ),
+          )
+          .run();
+        this.database.db
+          .delete(workspaceConversationBindings)
+          .where(eq(workspaceConversationBindings.workspaceSessionId, session.id))
+          .run();
+      }
+
+      return stale.map((session) => ({ ...session, status: "inactive" as const }));
+    });
+
+    return retire;
+  }
+
+  findInactiveSessions(): WorkspaceSession[] {
+    return this.database.db
+      .select()
+      .from(workspaceSessions)
+      .where(eq(workspaceSessions.status, "inactive"))
+      .all()
+      .map(rowToWorkspaceSession);
+  }
+
+  deleteInactiveSessions(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+
+    this.database.db.transaction(() => {
+      for (const id of ids) {
+        this.database.db
+          .delete(workspaceSessions)
+          .where(
+            and(
+              eq(workspaceSessions.id, id),
+              eq(workspaceSessions.status, "inactive"),
+            ),
+          )
+          .run();
+      }
+    });
   }
 
   getConversationBinding(
@@ -205,6 +286,50 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.database.close();
   }
 
+  private findStaleSessionRows(
+    inactiveBefore: string,
+    protectedWorkspaceIds: ReadonlySet<string> = new Set(),
+  ): WorkspaceSessionRow[] {
+    const recentBindingSessionIds = new Set(
+      this.database.db
+        .select({
+          workspaceSessionId: workspaceConversationBindings.workspaceSessionId,
+          lastUsedAt: workspaceConversationBindings.lastUsedAt,
+        })
+        .from(workspaceConversationBindings)
+        .all()
+        .filter((binding) => !isBefore(binding.lastUsedAt, inactiveBefore))
+        .map((binding) => binding.workspaceSessionId),
+    );
+
+    return this.database.db
+      .select()
+      .from(workspaceSessions)
+      .where(eq(workspaceSessions.status, "active"))
+      .all()
+      .filter(
+        (session) =>
+          isBefore(session.lastUsedAt, inactiveBefore) &&
+          !protectedWorkspaceIds.has(session.id) &&
+          !recentBindingSessionIds.has(session.id),
+      );
+  }
+
+  private deleteBindingsForInactiveSessions(): void {
+    const inactiveSessionIds = this.database.db
+      .select({ id: workspaceSessions.id })
+      .from(workspaceSessions)
+      .where(eq(workspaceSessions.status, "inactive"))
+      .all();
+
+    for (const session of inactiveSessionIds) {
+      this.database.db
+        .delete(workspaceConversationBindings)
+        .where(eq(workspaceConversationBindings.workspaceSessionId, session.id))
+        .run();
+    }
+  }
+
 }
 
 export function createWorkspaceStore(stateDir: string): WorkspaceStore {
@@ -215,7 +340,7 @@ function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {
   return {
     id: row.id,
     root: row.root,
-    status: row.status,
+    status: row.status === "active" ? "active" : "inactive",
     mode: row.mode === "worktree" ? "worktree" : "checkout",
     sourceRoot: row.sourceRoot ?? undefined,
     baseRef: row.baseRef ?? undefined,
@@ -224,6 +349,12 @@ function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {
     createdAt: row.createdAt,
     lastUsedAt: row.lastUsedAt,
   };
+}
+
+function isBefore(value: string, cutoff: string): boolean {
+  const timestamp = Date.parse(value);
+  const cutoffTimestamp = Date.parse(cutoff);
+  return Number.isFinite(timestamp) && Number.isFinite(cutoffTimestamp) && timestamp < cutoffTimestamp;
 }
 
 function rowToWorkspaceConversationBinding(

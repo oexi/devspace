@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, realpath, rm, stat } from "node:fs/promises";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import type { ServerConfig } from "./config.js";
 import { assertAllowedPath, isPathInsideRoot, resolveConfinedPath } from "./roots.js";
 
@@ -33,10 +33,15 @@ export interface ManagedWorktree {
   managed: boolean;
 }
 
+export interface ManagedWorktreeRemovalResult {
+  status: "removed" | "not_found" | "unsafe";
+  reason?: string;
+}
+
 export async function createManagedWorktree(input: {
   sourcePath: string;
   baseRef?: string;
-  config: ServerConfig;
+  config: Pick<ServerConfig, "allowedRoots" | "worktreeRoot">;
 }): Promise<ManagedWorktree> {
   const sourcePath = await resolveConfinedPath(input.sourcePath, input.config.allowedRoots);
 
@@ -88,6 +93,98 @@ export async function createManagedWorktree(input: {
     detached: true,
     managed: true,
   };
+}
+
+/**
+ * Remove one managed worktree without forcing away uncommitted user changes.
+ * The path must be a direct child of the configured worktree root and must be
+ * registered with the source repository before Git is allowed to remove it.
+ */
+export async function removeManagedWorktree(input: {
+  sourceRoot: string;
+  path: string;
+  baseSha?: string;
+  config: Pick<ServerConfig, "allowedRoots" | "worktreeRoot">;
+}): Promise<ManagedWorktreeRemovalResult> {
+  let sourceRoot: string;
+  let worktreePath: string;
+  try {
+    sourceRoot = assertAllowedPath(input.sourceRoot, input.config.allowedRoots);
+    worktreePath = assertAllowedPath(input.path, [input.config.worktreeRoot]);
+  } catch (error) {
+    return {
+      status: "unsafe",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const relationship = relative(resolve(input.config.worktreeRoot), worktreePath);
+  if (
+    !relationship ||
+    relationship.startsWith("..") ||
+    relationship.includes(`..${sep}`) ||
+    relationship.includes(sep) ||
+    resolve(sourceRoot) === resolve(worktreePath)
+  ) {
+    return {
+      status: "unsafe",
+      reason: "Managed worktree path is not a direct child of the configured worktree root.",
+    };
+  }
+  if (!input.baseSha) {
+    return {
+      status: "unsafe",
+      reason: "Stored managed worktree session is missing its base commit.",
+    };
+  }
+
+  let registeredHead: string | undefined;
+  try {
+    const output = await git(["worktree", "list", "--porcelain"], sourceRoot);
+    for (const record of output.split(/\r?\n\r?\n/)) {
+      const lines = record.split(/\r?\n/);
+      const pathLine = lines.find((line) => line.startsWith("worktree "));
+      if (!pathLine || resolve(pathLine.slice("worktree ".length)) !== resolve(worktreePath)) continue;
+      registeredHead = lines
+        .find((line) => line.startsWith("HEAD "))
+        ?.slice("HEAD ".length)
+        .trim();
+      break;
+    }
+  } catch (error) {
+    return {
+      status: "unsafe",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (!registeredHead) {
+    const presence = await worktreePathPresence(worktreePath);
+    if (presence === "missing") return { status: "not_found" };
+    return {
+      status: "unsafe",
+      reason: presence === "unknown"
+        ? "Managed worktree path could not be inspected safely."
+        : "Path is not a registered worktree for the stored source repository.",
+    };
+  }
+
+  if (registeredHead !== input.baseSha) {
+    return {
+      status: "unsafe",
+      reason: "Managed worktree contains a commit beyond its stored base commit.",
+    };
+  }
+
+  try {
+    await git(["worktree", "remove", worktreePath], sourceRoot);
+    return { status: "removed" };
+  } catch (error) {
+    return {
+      status: "unsafe",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function resolveGitRoot(path: string, allowedRoots: string[]): Promise<string> {
@@ -187,4 +284,22 @@ function isGitUnavailable(error: unknown): boolean {
       "code" in error &&
       (error as { code?: unknown }).code === "ENOENT",
   );
+}
+
+async function worktreePathPresence(path: string): Promise<"present" | "missing" | "unknown"> {
+  try {
+    await stat(path);
+    return "present";
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      ((error as { code?: unknown }).code === "ENOENT" ||
+        (error as { code?: unknown }).code === "ENOTDIR")
+    ) {
+      return "missing";
+    }
+    return "unknown";
+  }
 }

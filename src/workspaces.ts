@@ -244,17 +244,18 @@ export class WorkspaceRegistry {
   async getWorkspace(workspaceId: string): Promise<Workspace> {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
+      const session = this.store?.getSession(workspaceId);
+      if (this.store && (!session || session.status !== "active")) {
+        this.workspaces.delete(workspaceId);
+        throw unknownWorkspaceError(workspaceId);
+      }
       await this.assertWorkspaceRootAllowed(workspace.root, workspace.mode, workspace.sourceRoot);
       this.store?.touchSession(workspaceId);
       return workspace;
     }
 
     const session = this.store?.getSession(workspaceId);
-    if (!session) {
-      throw new Error(
-        `Unknown workspaceId: ${workspaceId}. Open the target project or worktree again and continue with the new workspaceId.`,
-      );
-    }
+    if (!session || session.status !== "active") throw unknownWorkspaceError(workspaceId);
 
     const root = await this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
     const restoredWorkspace: Workspace = {
@@ -281,6 +282,19 @@ export class WorkspaceRegistry {
     this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
 
     return restoredWorkspace;
+  }
+
+  evictRetiredWorkspaces(
+    workspaceIds: readonly string[],
+    protectedWorkspaceIds: Iterable<string> = [],
+  ): string[] {
+    const protectedIds = new Set(protectedWorkspaceIds);
+    const evicted: string[] = [];
+    for (const workspaceId of workspaceIds) {
+      if (protectedIds.has(workspaceId)) continue;
+      if (this.workspaces.delete(workspaceId)) evicted.push(workspaceId);
+    }
+    return evicted;
   }
 
   async resolvePath(workspace: Workspace, inputPath: string): Promise<string> {
@@ -588,4 +602,10 @@ async function walkWorkspace(
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function unknownWorkspaceError(workspaceId: string): Error {
+  return new Error(
+    `Unknown workspaceId: ${workspaceId}. Open the target project or worktree again and continue with the new workspaceId.`,
+  );
 }

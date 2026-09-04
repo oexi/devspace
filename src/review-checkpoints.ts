@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, getGitEligibility, safeWorkspaceRefSegment } from "./git.js";
@@ -27,6 +27,11 @@ export interface ReviewChangesResult {
   patch: string;
 }
 
+export interface ReviewCheckpointCleanupResult {
+  cleaned: boolean;
+  reason?: string;
+}
+
 export type ReviewAvailability =
   | { available: true }
   | { available: false; reason: string };
@@ -43,6 +48,11 @@ interface WorkspaceReviewState {
 
 export interface ReviewCheckpointManager {
   initializeWorkspace(input: { workspaceId: string; root: string }): Promise<ReviewAvailability>;
+  cleanupWorkspace(input: {
+    workspaceId: string;
+    root: string;
+    gitRoot?: string;
+  }): Promise<ReviewCheckpointCleanupResult>;
   reviewChanges(input: {
     workspaceId: string;
     root: string;
@@ -88,6 +98,20 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
         }
       }
       return reviewAvailability(states.get(workspaceId));
+    },
+
+    async cleanupWorkspace({ workspaceId, root, gitRoot }) {
+      const existingState = states.get(workspaceId);
+      assertWorkspaceRoot(existingState, workspaceId, root);
+
+      const pending = initializations.get(workspaceId);
+      if (pending) await pending.catch(() => undefined);
+
+      const initializedState = states.get(workspaceId);
+      assertWorkspaceRoot(initializedState, workspaceId, root);
+      const result = await removeReviewRefs(gitRoot ?? root, workspaceId);
+      states.delete(workspaceId);
+      return result;
     },
 
     async reviewChanges({ workspaceId, root, since = "last_shown", markReviewed = true }) {
@@ -192,6 +216,56 @@ export async function readReviewRef(root: string, reviewRef: string): Promise<Re
     throw new Error(`Unknown DevSpace review reference: ${reviewRef}`);
   }
   return readReviewCommit(eligibility.gitRoot, commit);
+}
+
+export async function removeReviewRefs(
+  root: string,
+  workspaceId: string,
+): Promise<ReviewCheckpointCleanupResult> {
+  try {
+    const rootStats = await stat(root);
+    if (!rootStats.isDirectory()) {
+      return {
+        cleaned: false,
+        reason: "Review workspace root is not a directory.",
+      };
+    }
+  } catch (error) {
+    return {
+      cleaned: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  let eligibility;
+  try {
+    eligibility = await getGitEligibility(root);
+  } catch (error) {
+    return {
+      cleaned: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (!eligibility.gitRoot) {
+    return {
+      // A checkout with no Git root cannot have DevSpace review refs. Treat
+      // this as a successful no-op so old plain-directory sessions can age out.
+      cleaned: true,
+    };
+  }
+
+  try {
+    const refs = reviewRefs(workspaceId);
+    await git(eligibility.gitRoot, ["update-ref", "-d", refs.openRef]);
+    await git(eligibility.gitRoot, ["update-ref", "-d", refs.baselineRef]);
+    return { cleaned: true };
+  } catch (error) {
+    return {
+      cleaned: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function assertWorkspaceRoot(

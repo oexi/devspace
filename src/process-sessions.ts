@@ -235,6 +235,14 @@ export class ProcessSessionManager {
     );
   }
 
+  activeWorkspaceIds(): ReadonlySet<string> {
+    return new Set(
+      Array.from(this.sessions.values())
+        .filter((session) => session.running)
+        .map((session) => session.workspaceId),
+    );
+  }
+
   async start(input: StartCommandInput): Promise<ProcessSnapshot> {
     if (this.shuttingDown) {
       throw new Error("Process session manager is shutting down.");

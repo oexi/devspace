@@ -101,6 +101,30 @@ test("historical review refs survive later reviews and manager restarts", async 
   assert.doesNotMatch(restoredFirst.patch, /\+second/);
 });
 
+test("cleanup removes all review refs for a retired workspace", async (t) => {
+  const root = await committedRepository(t);
+  const manager = createReviewCheckpointManager();
+  const workspaceId = "ws_retired_review";
+  await manager.initializeWorkspace({ workspaceId, root });
+
+  await writeFile(join(root, "README.md"), "hello\nretired\n");
+  const review = await manager.reviewChanges({ workspaceId, root });
+  assert.notEqual(
+    await gitOutput(root, ["show-ref", "--verify", "refs/devspace/review/ws_retired_review/open"]),
+    "",
+  );
+
+  const cleanup = await manager.cleanupWorkspace({ workspaceId, root });
+  assert.equal(cleanup.cleaned, true);
+  await assert.rejects(
+    () => gitOutput(root, ["show-ref", "--verify", "refs/devspace/review/ws_retired_review/open"]),
+  );
+  await assert.rejects(
+    () => gitOutput(root, ["show-ref", "--verify", "refs/devspace/review/ws_retired_review/baseline"]),
+  );
+  await assert.rejects(() => readReviewRef(root, review.reviewRef), /Unknown DevSpace review reference/);
+});
+
 test("review refs are scoped to the workspace review history", async (t) => {
   const root = await committedRepository(t);
   const manager = createReviewCheckpointManager();
