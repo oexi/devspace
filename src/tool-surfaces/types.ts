@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ProcessSessionManager } from "../process-sessions.js";
 import type { ServerConfig } from "../config.js";
+import type { ReviewCheckpointManager } from "../review-checkpoints.js";
 import type { WorkspaceRegistry } from "../workspaces.js";
 
 export const WORKSPACE_APP_URI = "ui://devspace/workspace-app.html";
@@ -78,6 +79,7 @@ export interface ToolRegistrationContext {
   config: ServerConfig;
   workspaces: WorkspaceRegistry;
   processSessions: ProcessSessionManager;
+  reviewCheckpoints: ReviewCheckpointManager;
 }
 
 export interface ToolInstructionContext {

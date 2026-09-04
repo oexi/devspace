@@ -39,7 +39,7 @@ export function registerClaudeTools(context: ToolRegistrationContext): void {
 const CLAUDE_SHELL_DESCRIPTION = `Run a shell command with the local user's authority. Commands are not sandboxed; workspace validation only selects the initial working directory. Use this for file inspection, tests, builds, package scripts, and other commands.`;
 
 function registerClaudeMutationTools(context: ToolRegistrationContext): void {
-  const { server, config, workspaces } = context;
+  const { server, config, workspaces, reviewCheckpoints } = context;
 
   server.registerTool(
     toolNames.write,
@@ -60,10 +60,15 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
       const startedAt = performance.now();
       const workspace = await workspaces.getWorkspace(workspaceId);
       await workspaces.resolvePath(workspace, input.path);
-      const response = await writeFileTool(input, {
-        cwd: workspace.root,
-        root: workspace.root,
-      });
+      const response = await reviewCheckpoints.trackDirectMutation(
+        { workspaceId, root: workspace.root },
+        () => writeFileTool(input, {
+          cwd: workspace.root,
+          root: workspace.root,
+        }),
+        [input.path],
+        (result) => !result.isError,
+      );
 
       if (response.isError) {
         logFailedToolResponse(
@@ -128,10 +133,15 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
       const startedAt = performance.now();
       const workspace = await workspaces.getWorkspace(workspaceId);
       await workspaces.resolvePath(workspace, input.path);
-      const response = await editFileTool(input, {
-        cwd: workspace.root,
-        root: workspace.root,
-      });
+      const response = await reviewCheckpoints.trackDirectMutation(
+        { workspaceId, root: workspace.root },
+        () => editFileTool(input, {
+          cwd: workspace.root,
+          root: workspace.root,
+        }),
+        [input.path],
+        (result) => !result.isError,
+      );
 
       if (response.isError) {
         logFailedToolResponse(
@@ -172,7 +182,7 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
 }
 
 function registerShellTool(context: ToolRegistrationContext): void {
-  const { server, config, workspaces } = context;
+  const { server, config, workspaces, reviewCheckpoints } = context;
 
   server.registerTool(
     toolNames.shell,
@@ -207,10 +217,13 @@ function registerShellTool(context: ToolRegistrationContext): void {
         workspace,
         workingDirectory,
       );
-      const response = await runShellTool(input, {
-        cwd,
-        root: workspace.root,
-      });
+      const response = await reviewCheckpoints.trackWorkspaceOperation(
+        { workspaceId, root: workspace.root },
+        () => runShellTool(input, {
+          cwd,
+          root: workspace.root,
+        }),
+      );
 
       if (response.isError) {
         logFailedToolResponse(

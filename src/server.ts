@@ -633,6 +633,7 @@ export function createMcpServer(
     config,
     workspaces,
     processSessions,
+    reviewCheckpoints,
   });
 
   registerAppTool(
@@ -703,6 +704,7 @@ export function createMcpServer(
     registerArtifactTools(server, {
       config,
       workspaces,
+      reviewCheckpoints,
       incomingArtifactAdapters,
     });
   }

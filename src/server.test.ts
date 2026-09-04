@@ -188,6 +188,209 @@ test("show_changes keeps model output compact and preserves the rich review card
   assert.equal(inputProperties && "reviewRef" in inputProperties, false);
 });
 
+test("show_changes excludes dirty files that existed before the workspace opened", async (t) => {
+  const context = await fixture(t, { git: true, toolMode: "claude" });
+  await writeFile(join(context.project, "background.txt"), "background work\n");
+
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "turn-scoped-preexisting"),
+  ).workspaceId;
+  await context.client.callTool({
+    name: "write",
+    arguments: {
+      workspaceId,
+      path: "job.txt",
+      content: "job change\n",
+    },
+  });
+
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const card = responseCard(review);
+  assert.deepEqual((card.files as Array<{ path: string }>).map((file) => file.path), ["job.txt"]);
+  assert.doesNotMatch(
+    ((card.payload as { patch?: string } | undefined)?.patch) ?? "",
+    /background/,
+  );
+});
+
+test("show_changes discovers shell-generated paths and excludes concurrent background paths", async (t) => {
+  const context = await fixture(t, { git: true, toolMode: "claude" });
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "turn-scoped-shell"),
+  ).workspaceId;
+
+  await writeFile(join(context.project, "background.txt"), "background work\n");
+  await context.client.callTool({
+    name: "bash",
+    arguments: {
+      workspaceId,
+      command: "printf 'generated\\n' > generated.txt",
+    },
+  });
+
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const card = responseCard(review);
+  assert.deepEqual((card.files as Array<{ path: string }>).map((file) => file.path), ["generated.txt"]);
+});
+
+test("show_changes records direct edit mutations", async (t) => {
+  const context = await fixture(t, { git: true, toolMode: "claude" });
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "turn-scoped-edit"),
+  ).workspaceId;
+
+  await context.client.callTool({
+    name: "edit",
+    arguments: {
+      workspaceId,
+      path: "README.md",
+      edits: [{ oldText: "hello", newText: "edited by the job" }],
+    },
+  });
+
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const card = responseCard(review);
+  assert.deepEqual((card.files as Array<{ path: string }>).map((file) => file.path), ["README.md"]);
+  assert.match(
+    ((card.payload as { patch?: string } | undefined)?.patch) ?? "",
+    /edited by the job/,
+  );
+});
+
+test("show_changes records apply_patch mutations", async (t) => {
+  const context = await fixture(t, { git: true, toolMode: "codex" });
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "turn-scoped-apply-patch"),
+  ).workspaceId;
+
+  await context.client.callTool({
+    name: "apply_patch",
+    arguments: {
+      workspaceId,
+      patch: [
+        "*** Begin Patch",
+        "*** Add File: generated-by-patch.txt",
+        "+patch change",
+        "*** End Patch",
+      ].join("\n"),
+    },
+  });
+
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const card = responseCard(review);
+  assert.deepEqual(
+    (card.files as Array<{ path: string }>).map((file) => file.path),
+    ["generated-by-patch.txt"],
+  );
+});
+
+test("show_changes tracks long-running process changes through write_stdin", async (t) => {
+  const context = await fixture(t, { git: true, toolMode: "codex" });
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "turn-scoped-process"),
+  ).workspaceId;
+  const script = "setTimeout(() => require('node:fs').writeFileSync('late.txt', 'late\\n'), 100)";
+  const started = structuredContent(await context.client.callTool({
+    name: "exec_command",
+    arguments: {
+      workspaceId,
+      cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+      yieldTimeMs: 10,
+    },
+  }));
+  assert.equal(started.running, true);
+  assert.equal(typeof started.sessionId, "number");
+
+  await context.client.callTool({
+    name: "write_stdin",
+    arguments: {
+      workspaceId,
+      sessionId: started.sessionId,
+      yieldTimeMs: 2_000,
+    },
+  });
+
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const card = responseCard(review);
+  assert.deepEqual((card.files as Array<{ path: string }>).map((file) => file.path), ["late.txt"]);
+});
+
+test("show_changes isolates a workspace subdirectory from sibling repository files", async (t) => {
+  const context = await fixture(t, { git: true, nestedGit: true, toolMode: "claude" });
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "turn-scoped-subdirectory"),
+  ).workspaceId;
+  await writeFile(join(context.project, "..", "sibling.txt"), "background work\n");
+
+  await context.client.callTool({
+    name: "write",
+    arguments: {
+      workspaceId,
+      path: "README.md",
+      content: "workspace change\n",
+    },
+  });
+
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const card = responseCard(review);
+  assert.deepEqual((card.files as Array<{ path: string }>).map((file) => file.path), ["README.md"]);
+  assert.doesNotMatch(
+    ((card.payload as { patch?: string } | undefined)?.patch) ?? "",
+    /sibling\.txt/,
+  );
+});
+
+test("repeated show_changes reviews only the next tracked turn", async (t) => {
+  const context = await fixture(t, { git: true, toolMode: "claude" });
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "turn-scoped-repeat"),
+  ).workspaceId;
+
+  await context.client.callTool({
+    name: "write",
+    arguments: { workspaceId, path: "first.txt", content: "first\n" },
+  });
+  const first = responseCard(await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  }));
+  assert.deepEqual((first.files as Array<{ path: string }>).map((file) => file.path), ["first.txt"]);
+
+  const repeated = responseCard(await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  }));
+  assert.deepEqual(repeated.files, []);
+
+  await context.client.callTool({
+    name: "write",
+    arguments: { workspaceId, path: "second.txt", content: "second\n" },
+  });
+  const second = responseCard(await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  }));
+  assert.deepEqual((second.files as Array<{ path: string }>).map((file) => file.path), ["second.txt"]);
+});
+
 test("show_changes can reopen a historical review without advancing the checkpoint", async (t) => {
   const context = await fixture(t, { git: true });
   const workspaceId = structuredContent(
@@ -356,6 +559,7 @@ async function fixture(
   t: TestContext,
   options: {
     git?: boolean;
+    nestedGit?: boolean;
     localAgentProviders?: LocalAgentProviderAvailability[] | (() => LocalAgentProviderAvailability[]);
     subagents?: SubagentsConfig;
     toolMode?: ToolMode;
@@ -363,7 +567,10 @@ async function fixture(
   } = {},
 ): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
-  const project = join(root, "project");
+  const project = options.nestedGit
+    ? join(root, "repository", "project")
+    : join(root, "project");
+  const repository = options.nestedGit ? join(root, "repository") : project;
   const agentDir = join(root, "agent");
   const stateDir = join(root, ".state");
 
@@ -382,11 +589,11 @@ async function fixture(
 
   if (options.git) {
     await writeFile(join(project, "README.md"), "hello\n");
-    await git(project, ["init"]);
-    await git(project, ["config", "user.email", "devspace@example.com"]);
-    await git(project, ["config", "user.name", "DevSpace Test"]);
-    await git(project, ["add", "."]);
-    await git(project, ["commit", "-m", "Initial commit"]);
+    await git(repository, ["init"]);
+    await git(repository, ["config", "user.email", "devspace@example.com"]);
+    await git(repository, ["config", "user.name", "DevSpace Test"]);
+    await git(repository, ["add", "."]);
+    await git(repository, ["commit", "-m", "Initial commit"]);
   }
 
   const initialProviderAvailability = typeof options.localAgentProviders === "function"

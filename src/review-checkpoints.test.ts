@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -18,6 +18,48 @@ test("a clean workspace reports no changes from the last-shown checkpoint", asyn
 
   assert.equal(clean.summary.files, 0);
   assert.equal(clean.patch, "");
+});
+
+test("Git-backed reviews preserve binary content and rename metadata", async (t) => {
+  const root = await committedRepository(t);
+  await writeFile(join(root, "asset.bin"), Buffer.from([0, 1, 2, 3, 4, 5]));
+  await git(root, ["add", "asset.bin"]);
+  await git(root, ["commit", "-m", "Add binary asset"]);
+
+  const manager = createReviewCheckpointManager();
+  await manager.initializeWorkspace({ workspaceId: "ws_binary_rename", root });
+  await manager.trackDirectMutation(
+    { workspaceId: "ws_binary_rename", root },
+    () => rename(join(root, "asset.bin"), join(root, "renamed.bin")),
+    ["asset.bin", "renamed.bin"],
+  );
+
+  const renamed = await manager.reviewChanges({ workspaceId: "ws_binary_rename", root });
+  assert.deepEqual(renamed.files, [{
+    path: "renamed.bin",
+    previousPath: "asset.bin",
+    type: "rename-pure",
+    additions: 0,
+    removals: 0,
+  }]);
+  assert.match(renamed.patch, /similarity index 100%/);
+
+  const reopened = await manager.reviewByRef({
+    workspaceId: "ws_binary_rename",
+    root,
+    reviewRef: renamed.reviewRef,
+  });
+  assert.deepEqual(reopened.files, renamed.files);
+  assert.equal(reopened.patch, renamed.patch);
+
+  await manager.trackDirectMutation(
+    { workspaceId: "ws_binary_rename", root },
+    () => writeFile(join(root, "renamed.bin"), Buffer.from([0, 1, 2, 3, 4, 6])),
+    ["renamed.bin"],
+  );
+  const binary = await manager.reviewChanges({ workspaceId: "ws_binary_rename", root });
+  assert.deepEqual(binary.files.map((file) => file.path), ["renamed.bin"]);
+  assert.ok(binary.patch.length > 0);
 });
 
 test("initialization reports whether aggregate review is available", async (t) => {
@@ -125,6 +167,32 @@ test("cleanup removes all review refs for a retired workspace", async (t) => {
   await assert.rejects(() => readReviewRef(root, review.reviewRef), /Unknown DevSpace review reference/);
 });
 
+test("tracked historical reviews retain subdirectory path scope after restart", async (t) => {
+  const { root, workspace } = await scopedRepository(t);
+  const manager = createReviewCheckpointManager();
+  await manager.initializeWorkspace({ workspaceId: "ws_tracked_history", root: workspace });
+
+  await writeFile(join(root, "sibling.txt"), "background work\n");
+  await manager.trackDirectMutation(
+    { workspaceId: "ws_tracked_history", root: workspace },
+    async () => writeFile(join(workspace, "README.md"), "workspace job\n"),
+    ["README.md"],
+  );
+  const review = await manager.reviewChanges({
+    workspaceId: "ws_tracked_history",
+    root: workspace,
+  });
+
+  const restarted = createReviewCheckpointManager();
+  const restored = await restarted.reviewByRef({
+    workspaceId: "ws_tracked_history",
+    root: workspace,
+    reviewRef: review.reviewRef,
+  });
+  assert.deepEqual(restored.files.map((file) => file.path), ["README.md"]);
+  assert.doesNotMatch(restored.patch, /sibling\.txt/);
+});
+
 test("review refs are scoped to the workspace review history", async (t) => {
   const root = await committedRepository(t);
   const manager = createReviewCheckpointManager();
@@ -180,6 +248,37 @@ test("concurrent initialization produces one usable checkpoint state", async (t)
     markReviewed: false,
   });
   assert.deepEqual(afterInitialization.files.map((file) => file.path), ["later.txt"]);
+});
+
+test("tracked mutations and concurrent reviews are serialized per workspace", async (t) => {
+  const root = await committedRepository(t);
+  const manager = createReviewCheckpointManager();
+  await manager.initializeWorkspace({ workspaceId: "ws_tracked_concurrent", root });
+
+  await Promise.all([
+    manager.trackDirectMutation(
+      { workspaceId: "ws_tracked_concurrent", root },
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await writeFile(join(root, "first.txt"), "first\n");
+      },
+      ["first.txt"],
+    ),
+    manager.trackDirectMutation(
+      { workspaceId: "ws_tracked_concurrent", root },
+      async () => {
+        await writeFile(join(root, "second.txt"), "second\n");
+      },
+      ["second.txt"],
+    ),
+  ]);
+
+  const reviews = await Promise.all([
+    manager.reviewChanges({ workspaceId: "ws_tracked_concurrent", root }),
+    manager.reviewChanges({ workspaceId: "ws_tracked_concurrent", root }),
+  ]);
+  const fileSets = reviews.map((review) => review.files.map((file) => file.path).sort());
+  assert.deepEqual(fileSets.sort((left, right) => left.length - right.length), [[], ["first.txt", "second.txt"]]);
 });
 
 test("a missing last-shown checkpoint falls back after restart and can be re-established", async (t) => {
@@ -295,6 +394,21 @@ async function committedRepository(t: TestContext): Promise<string> {
   await git(root, ["add", "README.md"]);
   await git(root, ["commit", "-m", "Initial commit"]);
   return root;
+}
+
+async function scopedRepository(t: TestContext): Promise<{ root: string; workspace: string }> {
+  const root = await mkdtemp(join(tmpdir(), "devspace-review-scoped-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(join(workspace, "README.md"), "hello\n");
+  await writeFile(join(root, "sibling.txt"), "sibling\n");
+  await git(root, ["init"]);
+  await git(root, ["config", "user.email", "devspace@example.com"]);
+  await git(root, ["config", "user.name", "DevSpace Test"]);
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "Initial commit"]);
+  return { root, workspace };
 }
 
 async function unbornRepository(t: TestContext): Promise<string> {

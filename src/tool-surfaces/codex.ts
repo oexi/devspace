@@ -74,7 +74,7 @@ function processToolResponse(snapshot: ProcessSnapshot) {
 }
 
 function registerApplyPatchTool(context: ToolRegistrationContext): void {
-  const { server, config, workspaces } = context;
+  const { server, config, workspaces, reviewCheckpoints } = context;
 
   server.registerTool(
     "apply_patch",
@@ -105,14 +105,19 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
     },
     async ({ workspaceId, patch }) => {
       const startedAt = performance.now();
-      const applied = await runLoggedToolOperation(
-        config,
-        { tool: "apply_patch", workspaceId },
-        startedAt,
-        async () => {
-          const workspace = await workspaces.getWorkspace(workspaceId);
-          return applyPatch(workspace.root, patch);
-        },
+      const workspace = await workspaces.getWorkspace(workspaceId);
+      const applied = await reviewCheckpoints.trackDirectMutation(
+        { workspaceId, root: workspace.root },
+        () => runLoggedToolOperation(
+          config,
+          { tool: "apply_patch", workspaceId },
+          startedAt,
+          () => applyPatch(workspace.root, patch),
+        ),
+        (result) => result.files.flatMap((file) => [
+          file.path,
+          file.previousPath,
+        ].filter((path): path is string => Boolean(path))),
       );
       const paths = applied.files.map((file) => file.path).join(", ");
       const result = `Applied patch to ${applied.files.length} file(s): ${paths}`;
@@ -132,7 +137,7 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
 }
 
 function registerCodexProcessTools(context: ToolRegistrationContext): void {
-  const { server, config, workspaces, processSessions } = context;
+  const { server, config, workspaces, processSessions, reviewCheckpoints } = context;
 
   server.registerTool(
     "exec_command",
@@ -200,34 +205,41 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       maxOutputTokens,
     }) => {
       const startedAt = performance.now();
-      const snapshot = await runLoggedToolOperation(
-        config,
-        {
-          tool: "exec_command",
-          workspaceId,
-          workingDirectory: workingDirectory ?? ".",
-          command: cmd,
-          commandLength: cmd.length,
-        },
-        startedAt,
-        async () => {
-          const workspace = await workspaces.getWorkspace(workspaceId);
-          const cwd = await workspaces.resolveWorkingDirectory(
-            workspace,
-            workingDirectory,
-          );
-          return processSessions.start({
+      const workspace = await workspaces.getWorkspace(workspaceId);
+      const snapshot = await reviewCheckpoints.trackWorkspaceOperation(
+        { workspaceId, root: workspace.root },
+        () => runLoggedToolOperation(
+          config,
+          {
+            tool: "exec_command",
             workspaceId,
+            workingDirectory: workingDirectory ?? ".",
             command: cmd,
-            cwd,
-            workspaceRoot: workspace.root,
-            tty,
-            columns,
-            rows,
-            yieldTimeMs,
-            maxOutputTokens,
-          });
-        },
+            commandLength: cmd.length,
+          },
+          startedAt,
+          async () => {
+            const cwd = await workspaces.resolveWorkingDirectory(
+              workspace,
+              workingDirectory,
+            );
+            return processSessions.start({
+              workspaceId,
+              command: cmd,
+              cwd,
+              workspaceRoot: workspace.root,
+              tty,
+              columns,
+              rows,
+              yieldTimeMs,
+              maxOutputTokens,
+            });
+          },
+        ),
+        (result) => ({
+          sessionId: result.sessionId,
+          running: result.running,
+        }),
       );
 
       return processToolResponse(snapshot);
@@ -297,13 +309,14 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       maxOutputTokens,
     }) => {
       const startedAt = performance.now();
-      const snapshot = await runLoggedToolOperation(
-        config,
-        { tool: "write_stdin", workspaceId },
-        startedAt,
-        async () => {
-          await workspaces.getWorkspace(workspaceId);
-          return processSessions.write({
+      const workspace = await workspaces.getWorkspace(workspaceId);
+      const snapshot = await reviewCheckpoints.trackProcessOperation(
+        { workspaceId, root: workspace.root, sessionId },
+        () => runLoggedToolOperation(
+          config,
+          { tool: "write_stdin", workspaceId },
+          startedAt,
+          () => processSessions.write({
             workspaceId,
             sessionId,
             chars,
@@ -311,8 +324,12 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
             rows,
             yieldTimeMs,
             maxOutputTokens,
-          });
-        },
+          }),
+        ),
+        (result) => ({
+          sessionId,
+          running: result.running,
+        }),
       );
 
       return processToolResponse(snapshot);

@@ -21,6 +21,7 @@ import {
   type IncomingArtifactAdapter,
 } from "./incoming-artifacts.js";
 import { logEvent } from "./logger.js";
+import type { ReviewCheckpointManager } from "./review-checkpoints.js";
 import type { WorkspaceRegistry } from "./workspaces.js";
 
 const ARTIFACT_WRITE_ANNOTATIONS = {
@@ -49,6 +50,7 @@ const openAIFileReferenceInputSchema = z.strictObject({
 export interface ArtifactToolRegistrationOptions {
   config: ServerConfig;
   workspaces: WorkspaceRegistry;
+  reviewCheckpoints?: ReviewCheckpointManager;
   incomingArtifactAdapters?: readonly IncomingArtifactAdapter[];
 }
 
@@ -87,6 +89,7 @@ export function registerArtifactTools(
   {
     config,
     workspaces,
+    reviewCheckpoints,
     incomingArtifactAdapters = [],
   }: ArtifactToolRegistrationOptions,
 ): void {
@@ -118,7 +121,7 @@ export function registerArtifactTools(
     },
     async (input) => executeArtifactTool(config, input, async () => {
       const workspace = await workspaces.getWorkspace(input.workspaceId);
-      const downloaded = await downloadIncomingArtifact({
+      const download = () => downloadIncomingArtifact({
         registry: incomingRegistry,
         workspaceId: workspace.id,
         workspaceRoot: workspace.root,
@@ -126,6 +129,13 @@ export function registerArtifactTools(
         file: input.file,
         path: input.path,
       });
+      const downloaded = reviewCheckpoints
+        ? await reviewCheckpoints.trackDirectMutation(
+            { workspaceId: workspace.id, root: workspace.root },
+            download,
+            (result) => [result.path],
+          )
+        : await download();
       return {
         publicResult: { path: downloaded.path },
         logResult: downloaded,
