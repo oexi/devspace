@@ -26,7 +26,9 @@ const manager = new LocalAgentManager({
   pool: new LocalAgentRuntimePool({ logger: log }),
   loadProfiles: (workspaceRoot) => loadLocalAgentProfiles(config, workspaceRoot, { includeDisabled: true }),
   agentDir: config.agentDir,
-  allowedRoots: config.allowedRoots,
+  // MCP-managed worktrees are valid workspace roots even when the managed
+  // worktree directory lives outside the user's normal checkout roots.
+  allowedRoots: [...config.allowedRoots, config.worktreeRoot],
   logger: log,
   subagents: config.subagents,
 });

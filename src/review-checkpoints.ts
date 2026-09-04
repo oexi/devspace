@@ -6,7 +6,7 @@ import { git, getGitEligibility, safeWorkspaceRefSegment } from "./git.js";
 export type ReviewSince = "last_shown" | "workspace_open";
 
 export interface ProcessReviewObservation {
-  sessionId?: number;
+  sessionId?: number | string;
   running: boolean;
 }
 
@@ -54,7 +54,7 @@ interface WorkspaceReviewState {
   // mutation boundary. Tool-backed turns disable this fallback explicitly.
   legacyFallbackAllowed: boolean;
   trackedPaths: Set<string>;
-  processSnapshots: Map<number, string>;
+  processSnapshots: Map<number | string, string>;
 }
 
 export interface ReviewCheckpointManager {
@@ -76,7 +76,7 @@ export interface ReviewCheckpointManager {
     process?: (result: T) => ProcessReviewObservation,
   ): Promise<T>;
   trackProcessOperation<T>(
-    input: { workspaceId: string; root: string; sessionId: number },
+    input: { workspaceId: string; root: string; sessionId: number | string },
     operation: () => Promise<T>,
     process?: (result: T) => ProcessReviewObservation,
   ): Promise<T>;
@@ -207,7 +207,11 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
     },
 
     async trackProcessOperation<T>(
-      { workspaceId, root, sessionId }: { workspaceId: string; root: string; sessionId: number },
+      { workspaceId, root, sessionId }: {
+        workspaceId: string;
+        root: string;
+        sessionId: number | string;
+      },
       operation: () => Promise<T>,
       process?: (result: T) => ProcessReviewObservation,
     ) {

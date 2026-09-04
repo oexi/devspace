@@ -7,10 +7,13 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Result } from "better-result";
 import { loadConfig, type ServerConfig, type ToolMode } from "./config.js";
 import type { LocalAgentProviderAvailability } from "./local-agent-availability.js";
 import { buildLocalAgentProviderStatuses } from "./local-agent-catalog.js";
 import type { SubagentsConfig } from "./local-agent-config.js";
+import type { LocalTaskAgentClient } from "./local-task-tools.js";
+import type { LocalAgentRecord } from "./local-agent-store.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
 import { createMcpServer } from "./server.js";
@@ -46,6 +49,89 @@ test("tool modes expose the expected host-facing tool surface", async (t) => {
       );
     });
   }
+});
+
+test("enabled subagents expose bounded high-level task tools", async (t) => {
+  const context = await fixture(t, {
+    uiEnabled: false,
+    localAgentProviders: [{ name: "codex", available: true }],
+  });
+  const tools = await context.client.listTools();
+  const names = tools.tools.map((tool) => tool.name);
+
+  assert.ok(names.includes("run_task"));
+  assert.ok(names.includes("wait_task"));
+  assert.match(context.client.getInstructions() ?? "", /prefer run_task as one bounded implementation task/i);
+});
+
+test("run_task changes participate in the turn-scoped show_changes review", async (t) => {
+  let taskRecord: LocalAgentRecord | undefined;
+  const taskClient = {
+    async start(input) {
+      await writeFile(join(input.workspaceRoot, "task-output.txt"), "worker change\n");
+      taskRecord = {
+        id: "agt_server_task",
+        workspaceId: input.workspaceId,
+        workspaceRoot: input.workspaceRoot,
+        profileName: input.target,
+        provider: input.target,
+        status: "idle",
+        latestResponse: "Implemented the requested task and validated it.",
+        createdAt: "2026-09-04T00:00:00.000Z",
+        updatedAt: "2026-09-04T00:00:01.000Z",
+      };
+      return Result.ok(taskRecord);
+    },
+    async get() {
+      assert.ok(taskRecord);
+      return Result.ok(taskRecord);
+    },
+  } satisfies LocalTaskAgentClient;
+  const context = await fixture(t, {
+    git: true,
+    uiEnabled: false,
+    localAgentProviders: [{ name: "codex", available: true }],
+    taskAgentClient: taskClient,
+  });
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "task-review"),
+  ).workspaceId;
+  assert.equal(typeof workspaceId, "string");
+
+  const task = await context.client.callTool({
+    name: "run_task",
+    arguments: {
+      workspaceId,
+      instruction: "Create the task output file.",
+    },
+  });
+  const taskOutput = structuredContent(task);
+  assert.equal(taskOutput.status, "completed");
+  assert.equal(taskOutput.target, "codex");
+  assert.match(taskOutput.result as string, /Implemented the requested task/);
+
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const card = responseCard(review);
+  assert.deepEqual(
+    (card.files as Array<{ path: string }>).map((file) => file.path),
+    ["task-output.txt"],
+  );
+});
+
+test("codex process polling schema permits long poll-only waits", async (t) => {
+  const context = await fixture(t, { toolMode: "codex", uiEnabled: false });
+  const tools = await context.client.listTools();
+  const writeStdin = tools.tools.find((tool) => tool.name === "write_stdin");
+  const yieldSchema = writeStdin?.inputSchema?.properties?.yieldTimeMs as {
+    maximum?: number;
+    description?: string;
+  } | undefined;
+
+  assert.equal(yieldSchema?.maximum, 110_000);
+  assert.match(yieldSchema?.description ?? "", /Poll-only calls default to 30000/);
 });
 
 test("server and open_workspace schema expose configured workspace roots", async (t) => {
@@ -564,6 +650,7 @@ async function fixture(
     subagents?: SubagentsConfig;
     toolMode?: ToolMode;
     uiEnabled?: boolean;
+    taskAgentClient?: LocalTaskAgentClient;
   } = {},
 ): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
@@ -639,6 +726,7 @@ async function fixture(
     new ProcessSessionManager(),
     resolveLocalAgentProviders,
     [],
+    options.taskAgentClient,
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "devspace-test-client", version: "1.0.0" });

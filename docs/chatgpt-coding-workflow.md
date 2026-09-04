@@ -168,10 +168,28 @@ DevSpace uses the Codex-style surface by default. It exposes:
 - `write_stdin`
 - `show_changes`
 
+When subagents are enabled, both surfaces also expose:
+
+- `run_task`
+- `wait_task`
+
+Use `run_task` for one coherent multi-step coding task that would otherwise
+require several separate reads, edits, and command calls. DevSpace runs that
+bounded worker locally and waits before returning. If the worker is still
+running, use `wait_task` with the returned task ID. This keeps the task
+lifecycle visible to the host while avoiding a large stream of host-visible
+MCP calls for the worker's internal implementation steps.
+
+For small or highly targeted operations, keep using the normal low-level
+tools. `run_task` is not intended to hide an entire conversation inside an
+opaque agent loop.
+
 In this mode, `write`, `edit`, and `bash` are not registered. `exec_command`
 returns a process session ID when a command is still
 running after its yield window. Use `write_stdin` to poll it, send input, resize
-a PTY, or send Ctrl-C. Set `tty: true` only for commands that need a terminal.
+a PTY, or send Ctrl-C. Poll-only calls wait 30 seconds by default and can use a
+longer yield window for unattended work, reducing repeated polling calls. Set
+`tty: true` only for commands that need a terminal.
 
 Set `tools.mode` to `claude` in `~/.devspace/config.jsonc` to expose `write`,
 `edit`, and `bash` instead of the Codex mutation and command tools. Dedicated
@@ -186,6 +204,11 @@ to `open_workspace` and `show_changes`. Reads, edits, and commands return normal
 MCP results without creating an iframe for each call. Set `ui.enabled` to
 `false` in `~/.devspace/config.jsonc` to disable UI metadata while keeping the
 aggregate review tool available.
+
+An MCP host may still show its own generic tool-call entry for every invocation
+even when Apps UI metadata is disabled. For long coding jobs, `run_task` and
+`wait_task` reduce that host-visible invocation count; disabling DevSpace UI
+metadata alone cannot suppress host-owned tool-call history.
 
 Call `show_changes` exactly once after the final file modification in any turn
 that changes files. It shows the combined changes for that turn and advances

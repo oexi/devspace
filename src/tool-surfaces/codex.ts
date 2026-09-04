@@ -17,7 +17,7 @@ import {
 
 type CodexRegistration = (context: ToolRegistrationContext) => void;
 
-const CODEX_INSTRUCTIONS = `Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Commands run with the local user's authority and are not sandboxed; workspace validation only selects their initial working directory. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.`;
+const CODEX_INSTRUCTIONS = `Use ${toolNames.read} for targeted direct file reads, apply_patch for file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Combine related file changes into one apply_patch call when possible. Combine non-interactive validation commands into one exec_command when no model reasoning is needed between them. For unattended long-running processes, prefer one long write_stdin poll over frequent short polls. Commands run with the local user's authority and are not sandboxed; workspace validation only selects their initial working directory. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.`;
 
 export function codexInstructions(): string {
   return CODEX_INSTRUCTIONS;
@@ -81,7 +81,7 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
     {
       title: "Apply patch",
       description:
-        "Apply one Codex-style patch in a workspace. Supports adding, overwriting, updating, deleting, and moving files. Use this for all file modifications. Paths must be relative to the workspace.",
+        "Apply one Codex-style patch in a workspace. Supports adding, overwriting, updating, deleting, and moving files. Use this for file modifications and combine related changes across multiple files into one patch when possible. Paths must be relative to the workspace.",
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         patch: z
@@ -144,7 +144,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
     {
       title: "Execute command",
       description:
-        "Run a command with the local user's authority. Commands are not sandboxed; workspace validation only selects the initial working directory. Returns the result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes.",
+        "Run a command with the local user's authority. Commands are not sandboxed; workspace validation only selects the initial working directory. Returns the result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for targeted inspection, tests, builds, package scripts, and long-running processes. When later steps do not require model reasoning, combine related validation commands into one call.",
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         cmd: z.string().min(1).describe("Shell command to execute."),
@@ -181,7 +181,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .max(30_000)
           .optional()
           .describe(
-            "Milliseconds to wait before returning a running session. Defaults to 10000.",
+            "Milliseconds to wait before returning a running session. Defaults to 10000; use up to 30000 for commands such as tests or builds that are expected to take longer.",
           ),
         maxOutputTokens: z
           .number()
@@ -251,7 +251,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
     {
       title: "Write to process",
       description:
-        "Poll or write characters to a process returned by exec_command. Omit chars or pass an empty string to poll. Pass \\u0003 to send Ctrl-C.",
+        "Poll or write characters to a process returned by exec_command. Omit chars or pass an empty string to poll. Poll-only calls wait longer by default to avoid frequent MCP calls; use a long yieldTimeMs for unattended jobs. Pass \\u0003 to send Ctrl-C.",
       inputSchema: {
         workspaceId: z
           .string()
@@ -283,10 +283,10 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .number()
           .int()
           .min(0)
-          .max(30_000)
+          .max(110_000)
           .optional()
           .describe(
-            "Milliseconds to wait for process output or completion. Defaults to 10000.",
+            "Milliseconds to wait for process output or completion. Poll-only calls default to 30000 and may use up to 110000; calls that send input or resize a terminal are internally capped at 30000.",
           ),
         maxOutputTokens: z
           .number()

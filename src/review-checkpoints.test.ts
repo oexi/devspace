@@ -311,6 +311,39 @@ test("tracked mutations and concurrent reviews are serialized per workspace", as
   assert.deepEqual(fileSets.sort((left, right) => left.length - right.length), [[], ["first.txt", "second.txt"]]);
 });
 
+test("background task snapshots capture changes made between visible tool calls", async (t) => {
+  const root = await committedRepository(t);
+  const manager = createReviewCheckpointManager();
+  const workspaceId = "ws_background_task";
+  const taskSessionId = "task:agt_background";
+  await manager.initializeWorkspace({ workspaceId, root });
+
+  await manager.trackWorkspaceOperation(
+    { workspaceId, root },
+    async () => {
+      await writeFile(join(root, "during-run.txt"), "first window\n");
+      return { running: true };
+    },
+    (result) => ({ sessionId: taskSessionId, running: result.running }),
+  );
+
+  // Simulate the worker continuing after run_task returned but before the host
+  // issues wait_task. This mutation must still belong to the task turn.
+  await writeFile(join(root, "between-calls.txt"), "background window\n");
+
+  await manager.trackProcessOperation(
+    { workspaceId, root, sessionId: taskSessionId },
+    async () => ({ running: false }),
+    (result) => ({ sessionId: taskSessionId, running: result.running }),
+  );
+
+  const review = await manager.reviewChanges({ workspaceId, root });
+  assert.deepEqual(
+    review.files.map((file) => file.path).sort(),
+    ["between-calls.txt", "during-run.txt"],
+  );
+});
+
 test("a missing last-shown checkpoint falls back after restart and can be re-established", async (t) => {
   const root = await committedRepository(t);
   const manager = createReviewCheckpointManager();

@@ -86,6 +86,13 @@ rejected so spelling mistakes cannot silently alter behavior.
 | `codex` | Default. `open_workspace`, `read`, `apply_patch`, `exec_command`, `write_stdin`, and `show_changes`. |
 | `claude` | `open_workspace`, `read`, `write`, `edit`, `bash`, and `show_changes`. |
 
+When `subagents.enabled` is `true`, both modes additionally expose `run_task`
+and `wait_task`. `run_task` delegates one coherent multi-step coding task to a
+bounded local worker; `wait_task` performs a long wait when that worker has not
+finished yet. This is the preferred path for reducing host-visible MCP call
+volume during long implementation jobs while keeping the worker lifecycle
+explicit.
+
 The dedicated MCP tools `grep`, `glob`, and `ls` are not exposed. Each mode uses
 its shell tool with programs such as `rg`, `find`, and `ls` when it needs those
 operations.
@@ -94,6 +101,11 @@ DevSpace attaches Apps UI metadata only to `open_workspace` and `show_changes`.
 This avoids rendering an iframe for every read, edit, search, or command call.
 Setting `ui.enabled` to `false` removes the metadata but does not remove the
 `show_changes` tool.
+
+The MCP host can still render its own generic entry for each tool invocation.
+That host-owned history is separate from DevSpace Apps UI metadata, so long
+tasks should prefer `run_task`/`wait_task` instead of many small low-level
+calls when subagents are enabled.
 
 ## Skills and subagents
 

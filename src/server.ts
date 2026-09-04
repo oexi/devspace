@@ -52,6 +52,11 @@ import {
 import {
   getLocalAgentProviderAvailabilitySnapshot,
 } from "./local-agent-availability.js";
+import type { LocalTaskAgentClient } from "./local-task-tools.js";
+import {
+  localTaskInstructions,
+  registerLocalTaskTools,
+} from "./local-task-tools.js";
 import {
   buildLocalAgentCatalog,
   buildLocalAgentProviderStatuses,
@@ -117,7 +122,7 @@ function serverInstructions(
     : ` Configured workspace roots are ${workspaceRoots.join(", ")}. When the user refers to a project or workspace by name without an explicit path, resolve it against these roots.`;
   const common = `Use DevSpace for coding work.${workspaceRootInstruction} Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected.`;
 
-  return `${common} ${toolSurface.instructions({ agents, skills })}${artifactInstruction}${showChangesInstruction}`;
+  return `${common} ${toolSurface.instructions({ agents, skills })}${localTaskInstructions(config.subagents.enabled)}${artifactInstruction}${showChangesInstruction}`;
 }
 
 function formatVisibleAgent(agent: {
@@ -293,6 +298,7 @@ export function createMcpServer(
   processSessions: ProcessSessionManager,
   resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
+  taskAgentClient?: LocalTaskAgentClient,
 ): McpServer {
   const toolSurface = getToolSurface(config.toolMode);
   const server = new McpServer(
@@ -627,6 +633,15 @@ export function createMcpServer(
       };
     },
   );
+
+  registerLocalTaskTools({
+    server,
+    config,
+    workspaces,
+    reviewCheckpoints,
+    resolveLocalAgentProviders,
+    client: taskAgentClient,
+  });
 
   toolSurface.register({
     server,

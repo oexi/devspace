@@ -22,7 +22,7 @@ import {
   textBlock,
 } from "./shared.js";
 
-const CLAUDE_INSTRUCTIONS = `Use ${toolNames.read} for direct file reads, ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for inspection, tests, builds, and other commands. Shell commands run with the local user's authority and are not sandboxed; workspace validation only selects their initial working directory. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.`;
+const CLAUDE_INSTRUCTIONS = `Use ${toolNames.read} for targeted direct file reads, ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for inspection, tests, builds, and other commands. Combine multiple edits to the same file into one edit call where practical. Combine non-interactive validation commands into one shell call when no model reasoning is needed between them. Shell commands run with the local user's authority and are not sandboxed; workspace validation only selects their initial working directory. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.`;
 
 export function claudeInstructions({
   agents,
@@ -36,7 +36,7 @@ export function registerClaudeTools(context: ToolRegistrationContext): void {
   registerShellTool(context);
 }
 
-const CLAUDE_SHELL_DESCRIPTION = `Run a shell command with the local user's authority. Commands are not sandboxed; workspace validation only selects the initial working directory. Use this for file inspection, tests, builds, package scripts, and other commands.`;
+const CLAUDE_SHELL_DESCRIPTION = `Run a shell command with the local user's authority. Commands are not sandboxed; workspace validation only selects the initial working directory. Use this for targeted inspection, tests, builds, package scripts, and other commands. Combine related non-interactive validation steps into one command when later steps do not require model reasoning.`;
 
 function registerClaudeMutationTools(context: ToolRegistrationContext): void {
   const { server, config, workspaces, reviewCheckpoints } = context;
