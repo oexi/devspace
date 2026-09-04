@@ -193,6 +193,36 @@ test("tracked historical reviews retain subdirectory path scope after restart", 
   assert.doesNotMatch(restored.patch, /sibling\.txt/);
 });
 
+test("tracked review commits contain only task paths while baseline absorbs workspace state", async (t) => {
+  const root = await committedRepository(t);
+  const manager = createReviewCheckpointManager();
+  const workspaceId = "ws_scoped_review_tree";
+  await manager.initializeWorkspace({ workspaceId, root });
+
+  await writeFile(join(root, "background.txt"), "background\n");
+  await manager.trackDirectMutation(
+    { workspaceId, root },
+    async () => writeFile(join(root, "job.txt"), "job\n"),
+    ["job.txt"],
+  );
+
+  const review = await manager.reviewChanges({ workspaceId, root });
+  assert.deepEqual(review.files.map((file) => file.path), ["job.txt"]);
+  assert.equal(
+    await gitOutput(root, ["diff", "--name-only", `${review.reviewRef}^1`, review.reviewRef]),
+    "job.txt",
+  );
+
+  const baseline = await gitOutput(root, [
+    "rev-parse",
+    `refs/devspace/review/${workspaceId}/baseline`,
+  ]);
+  assert.equal(
+    await gitOutput(root, ["diff", "--name-only", review.reviewRef, baseline]),
+    "background.txt",
+  );
+});
+
 test("review refs are scoped to the workspace review history", async (t) => {
   const root = await committedRepository(t);
   const manager = createReviewCheckpointManager();

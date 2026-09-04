@@ -291,21 +291,44 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
             : state.legacyFallbackAllowed
               ? undefined
               : new Set<string>();
-        const current = await commitWorkingTreeSnapshot(state.gitRoot, baseline, tree, scopePaths);
-        if (observation) {
-          for (const sessionId of state.processSnapshots.keys()) {
-            state.processSnapshots.set(sessionId, current);
-          }
-        }
+        const reviewTree = scopePaths === undefined
+          ? tree
+          : await captureScopedWorkingTreeTree(
+              state.gitRoot,
+              baseline,
+              state.root,
+              scopePaths,
+            );
+        const current = await commitWorkingTreeSnapshot(
+          state.gitRoot,
+          baseline,
+          reviewTree,
+          scopePaths,
+        );
         const review = await readReviewBetween(state.gitRoot, baseline, current, state.root, scopePaths);
 
+        let baselineCheckpoint = current;
         if (markReviewed) {
           const wasTurnScoped = state.turnScopeActive;
-          await git(state.gitRoot, ["update-ref", state.baselineRef, current]);
+          if (scopePaths !== undefined) {
+            baselineCheckpoint = await commitWorkingTreeSnapshot(
+              state.gitRoot,
+              current,
+              tree,
+              scopePaths,
+            );
+          }
+          await git(state.gitRoot, ["update-ref", state.baselineRef, baselineCheckpoint]);
           state.baselineRefAvailable = true;
           state.trackedPaths.clear();
           state.turnScopeActive = false;
           if (wasTurnScoped) state.legacyFallbackAllowed = false;
+        }
+        if (observation) {
+          const processCheckpoint = markReviewed ? baselineCheckpoint : observation;
+          for (const sessionId of state.processSnapshots.keys()) {
+            state.processSnapshots.set(sessionId, processCheckpoint);
+          }
         }
 
         const fallbackNote = usedWorkspaceOpenFallback
@@ -536,6 +559,28 @@ async function captureWorkingTreeTree(gitRoot: string): Promise<string> {
     await git(gitRoot, ["add", "-A", "--", "."], { env });
     const tree = (await git(gitRoot, ["write-tree"], { env })).stdout.trim();
     return tree;
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function captureScopedWorkingTreeTree(
+  gitRoot: string,
+  baseline: string,
+  workspaceRoot: string,
+  paths: ReadonlySet<string>,
+): Promise<string> {
+  const tempDir = await mkdtemp(join(tmpdir(), "devspace-review-scope-index-"));
+  const indexPath = join(tempDir, "index");
+  const env = checkpointEnv(indexPath);
+  const scope = reviewPathScope(gitRoot, workspaceRoot, paths);
+
+  try {
+    await git(gitRoot, ["read-tree", baseline], { env });
+    if (scope.pathspecs.length > 0) {
+      await git(gitRoot, ["add", "-A", "--", ...scope.pathspecs], { env });
+    }
+    return (await git(gitRoot, ["write-tree"], { env })).stdout.trim();
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

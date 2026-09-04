@@ -157,9 +157,20 @@ shows the combined changes and advances the review point automatically.
 
 ## Data Retention
 
-DevSpace does not currently prune workspace sessions, conversation bindings,
-or review refs. A future product retention policy will define safe cleanup for
-these records; no automatic deletion is performed today.
+DevSpace periodically retires workspace sessions that have been inactive for
+7 days and have no recently used conversation binding. Retirement removes the
+conversation binding, evicts the in-memory workspace, and removes its DevSpace
+review refs. A workspace with a running process session is protected from
+retirement.
+
+Managed worktrees are removed only when they are still registered with the
+stored source repository, remain at their original base commit, and have no
+uncommitted changes. A dirty worktree or one containing additional commits is
+kept and the cleanup failure is logged instead of forcing away user work.
+
+Inactive workspace-session rows are retained for 30 days so transient cleanup
+failures can be retried, then deleted once associated cleanup is safe. Cleanup
+runs every 15 minutes and once when the server starts.
 
 ## MCP Workspace Path Rejected
 
