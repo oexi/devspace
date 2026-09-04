@@ -95,7 +95,10 @@ test("cleanup retires a stale conversation workspace and its review history", as
     store.getConversationBinding("conversation-1", JSON.stringify(["checkout", project, null])),
     undefined,
   );
-  assert.throws(() => registry.getWorkspace(opened.workspace.id), /Unknown workspaceId/);
+  await assert.rejects(
+    () => registry.getWorkspace(opened.workspace.id),
+    /Unknown workspaceId/,
+  );
   await assert.rejects(
     () => gitOutput(project, ["show-ref", "--verify", `refs/devspace/review/${opened.workspace.id}/open`]),
   );

@@ -109,8 +109,8 @@ export async function removeManagedWorktree(input: {
   let sourceRoot: string;
   let worktreePath: string;
   try {
-    sourceRoot = assertAllowedPath(input.sourceRoot, input.config.allowedRoots);
-    worktreePath = assertAllowedPath(input.path, [input.config.worktreeRoot]);
+    sourceRoot = await resolveConfinedPath(input.sourceRoot, input.config.allowedRoots);
+    worktreePath = await resolveConfinedPath(input.path, [input.config.worktreeRoot]);
   } catch (error) {
     return {
       status: "unsafe",

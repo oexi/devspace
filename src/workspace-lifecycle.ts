@@ -1,4 +1,4 @@
-import { assertAllowedPath } from "./roots.js";
+import { resolveConfinedPath } from "./roots.js";
 import {
   removeManagedWorktree,
   type ManagedWorktreeRemovalResult,
@@ -125,9 +125,9 @@ async function cleanupReviewRefs(
   let gitRoot: string;
   try {
     root = session.mode === "worktree"
-      ? assertAllowedPath(session.root, [options.config.worktreeRoot])
-      : assertAllowedPath(session.root, options.config.allowedRoots);
-    gitRoot = assertAllowedPath(
+      ? await resolveConfinedPath(session.root, [options.config.worktreeRoot])
+      : await resolveConfinedPath(session.root, options.config.allowedRoots);
+    gitRoot = await resolveConfinedPath(
       session.sourceRoot ?? session.root,
       options.config.allowedRoots,
     );

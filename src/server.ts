@@ -760,7 +760,29 @@ export function createServer(
       reviewCheckpoints,
       protectedWorkspaceIds: processSessions.activeWorkspaceIds(),
     })
-      .then(() => undefined)
+      .then((result) => {
+        if (
+          result.retired.length > 0 ||
+          result.evictedWorkspaceIds.length > 0 ||
+          result.cleanedReviewWorkspaceIds.length > 0 ||
+          result.removedWorktreeWorkspaceIds.length > 0 ||
+          result.deletedSessionIds.length > 0
+        ) {
+          logEvent(config.logging, "info", "workspace_cleanup_completed", {
+            retired: result.retired.length,
+            evicted: result.evictedWorkspaceIds.length,
+            reviewRefsCleaned: result.cleanedReviewWorkspaceIds.length,
+            worktreesRemoved: result.removedWorktreeWorkspaceIds.length,
+            sessionsDeleted: result.deletedSessionIds.length,
+          });
+        }
+        if (result.errors.length > 0) {
+          logEvent(config.logging, "warn", "workspace_cleanup_partial", {
+            failures: result.errors,
+            retainedManagedWorktrees: result.retainedManagedWorktreeWorkspaceIds.length,
+          });
+        }
+      })
       .catch((error: unknown) => {
         logEvent(config.logging, "warn", "workspace_cleanup_failed", {
           error: error instanceof Error ? error.message : String(error),
