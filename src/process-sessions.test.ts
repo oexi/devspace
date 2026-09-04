@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { HeadTailBuffer, ProcessSessionManager } from "./process-sessions.js";
 
 const smallBuffer = new HeadTailBuffer(100);
@@ -57,6 +58,34 @@ const environment = await manager.start({
 });
 assert.equal(environment.running, false);
 assert.match(environment.output, /1,dumb,cat,cat,cat,1,workspace-a,\/tmp\/devspace-workspace-a/);
+
+if (process.platform !== "win32" && existsSync("/bin/bash")) {
+  const previousShell = process.env.SHELL;
+  process.env.SHELL = "/bin/bash";
+  try {
+    const pipeLoginShell = await manager.start({
+      workspaceId: "workspace-a",
+      cwd: process.cwd(),
+      command: "shopt -q login_shell && printf 'login-shell\\n' || printf 'non-login-shell\\n'",
+      yieldTimeMs: 2_000,
+    });
+    assert.equal(pipeLoginShell.running, false);
+    assert.match(pipeLoginShell.output, /login-shell/);
+
+    const ptyLoginShell = await manager.start({
+      workspaceId: "workspace-a",
+      cwd: process.cwd(),
+      command: "shopt -q login_shell && printf 'login-shell\\n' || printf 'non-login-shell\\n'",
+      tty: true,
+      yieldTimeMs: 2_000,
+    });
+    assert.equal(ptyLoginShell.running, false);
+    assert.match(ptyLoginShell.output, /login-shell/);
+  } finally {
+    if (previousShell === undefined) delete process.env.SHELL;
+    else process.env.SHELL = previousShell;
+  }
+}
 
 const background = await manager.start({
   workspaceId: "workspace-a",
@@ -211,7 +240,90 @@ try {
     });
     assert.equal(resizedPty.running, false);
     assert.match(resizedPty.output, /columns:120/);
+
+    const ptyCtrlCCode = [
+      "process.stdin.setRawMode(true)",
+      "process.stdin.on('data', data => {",
+      "if (data.includes('\\u0003')) { process.stdout.write('pty-ctrl-c\\n'); process.exit(0); }",
+      "})",
+    ].join("; ");
+    const ptyCtrlC = await manager.start({
+      workspaceId: "workspace-a",
+      cwd: process.cwd(),
+      command: `${node} -e ${JSON.stringify(ptyCtrlCCode)}`,
+      tty: true,
+      yieldTimeMs: 100,
+    });
+    assert.equal(ptyCtrlC.running, true);
+    assert.ok(ptyCtrlC.sessionId);
+
+    const ptyInterrupted = await manager.write({
+      workspaceId: "workspace-a",
+      sessionId: ptyCtrlC.sessionId,
+      chars: "\u0003",
+      yieldTimeMs: 2_000,
+    });
+    assert.equal(ptyInterrupted.running, false);
+    assert.match(ptyInterrupted.output, /pty-ctrl-c/);
   }
 } finally {
-  manager.shutdown();
+  await manager.shutdown();
+}
+
+if (process.platform !== "win32") {
+  const gracefulManager = new ProcessSessionManager({
+    shutdownGracePeriodMs: 500,
+  });
+  try {
+    const graceful = await gracefulManager.start({
+      workspaceId: "workspace-a",
+      cwd: process.cwd(),
+      command: `exec ${node} -e ${JSON.stringify(
+        "console.log(process.pid); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 120)); setInterval(() => {}, 1_000)",
+      )}`,
+      yieldTimeMs: 500,
+    });
+    assert.equal(graceful.running, true);
+    const gracefulPid = Number(graceful.output.trim());
+    assert.ok(Number.isInteger(gracefulPid) && gracefulPid > 0);
+
+    const gracefulShutdownStartedAt = Date.now();
+    const gracefulShutdown = gracefulManager.shutdown();
+    assert.equal(gracefulManager.shutdown(), gracefulShutdown);
+    await gracefulShutdown;
+    assert.ok(
+      Date.now() - gracefulShutdownStartedAt >= 80,
+      "shutdown must await a gracefully exiting process",
+    );
+    assert.throws(() => process.kill(gracefulPid, 0), { code: "ESRCH" });
+  } finally {
+    await gracefulManager.shutdown();
+  }
+
+  const forcedManager = new ProcessSessionManager({
+    shutdownGracePeriodMs: 100,
+  });
+  try {
+    const forced = await forcedManager.start({
+      workspaceId: "workspace-a",
+      cwd: process.cwd(),
+      command: `exec ${node} -e ${JSON.stringify(
+        "console.log(process.pid); process.on('SIGTERM', () => {}); setInterval(() => {}, 1_000)",
+      )}`,
+      yieldTimeMs: 500,
+    });
+    assert.equal(forced.running, true);
+    const forcedPid = Number(forced.output.trim());
+    assert.ok(Number.isInteger(forcedPid) && forcedPid > 0);
+
+    const forcedShutdownStartedAt = Date.now();
+    await forcedManager.shutdown();
+    assert.ok(
+      Date.now() - forcedShutdownStartedAt >= 80,
+      "shutdown must wait through the graceful grace period before force-killing",
+    );
+    assert.throws(() => process.kill(forcedPid, 0), { code: "ESRCH" });
+  } finally {
+    await forcedManager.shutdown();
+  }
 }

@@ -59,3 +59,20 @@ terminateProcessTree(
   },
 );
 assert.deepEqual(fallbackCalls, ["child:SIGTERM"]);
+
+const missingGroupCalls: string[] = [];
+terminateProcessTree(
+  { pid: 45, kill: (signal) => (missingGroupCalls.push(`child:${signal}`), true) },
+  "SIGTERM",
+  true,
+  {
+    platform: "linux",
+    killGroup: () => {
+      const error = new Error("group disappeared") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    },
+    killWindowsTree: () => false,
+  },
+);
+assert.deepEqual(missingGroupCalls, ["child:SIGTERM"]);

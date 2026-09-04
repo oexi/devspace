@@ -68,8 +68,10 @@ export function terminateProcessTree(
     try {
       runtime.killGroup(child.pid, signal);
       return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+    } catch {
+      // Fall back to the direct child when the process is not a group leader
+      // or the group disappeared between resolving the PID and signaling it.
+      // This also keeps a failed group lookup from leaving the leader alive.
     }
   }
 

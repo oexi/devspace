@@ -9,6 +9,8 @@ const MAX_POLL_YIELD_MS = 110_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
 const DEFAULT_BUFFER_CHARACTERS = 1_000_000;
 const COMPLETED_SESSION_TTL_MS = 5 * 60 * 1_000;
+const DEFAULT_SHUTDOWN_GRACE_PERIOD_MS = 1_000;
+const MAX_SHUTDOWN_GRACE_PERIOD_MS = 30_000;
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
 
@@ -53,6 +55,7 @@ interface ManagedProcess {
 interface ProcessSession {
   id: number;
   workspaceId: string;
+  isPty: boolean;
   process?: ManagedProcess;
   startedAt: number;
   columns: number;
@@ -69,6 +72,7 @@ interface ProcessSession {
 interface ProcessSessionManagerOptions {
   maxBufferCharacters?: number;
   completedSessionTtlMs?: number;
+  shutdownGracePeriodMs?: number;
 }
 
 function boundedInteger(value: number | undefined, fallback: number, maximum: number): number {
@@ -215,14 +219,27 @@ export class ProcessSessionManager {
   private readonly sessions = new Map<number, ProcessSession>();
   private readonly maxBufferCharacters: number;
   private readonly completedSessionTtlMs: number;
+  private readonly shutdownGracePeriodMs: number;
   private nextSessionId = 1;
+  private shuttingDown = false;
+  private shutdownPhase: "graceful" | "forced" | undefined;
+  private shutdownPromise: Promise<void> | undefined;
 
   constructor(options: ProcessSessionManagerOptions = {}) {
     this.maxBufferCharacters = options.maxBufferCharacters ?? DEFAULT_BUFFER_CHARACTERS;
     this.completedSessionTtlMs = options.completedSessionTtlMs ?? COMPLETED_SESSION_TTL_MS;
+    this.shutdownGracePeriodMs = boundedInteger(
+      options.shutdownGracePeriodMs,
+      DEFAULT_SHUTDOWN_GRACE_PERIOD_MS,
+      MAX_SHUTDOWN_GRACE_PERIOD_MS,
+    );
   }
 
   async start(input: StartCommandInput): Promise<ProcessSnapshot> {
+    if (this.shuttingDown) {
+      throw new Error("Process session manager is shutting down.");
+    }
+
     const session = this.createSession(input);
     this.sessions.set(session.id, session);
 
@@ -231,6 +248,8 @@ export class ProcessSessionManager {
       else this.startPipe(session, input);
     } catch (error) {
       this.sessions.delete(session.id);
+      session.running = false;
+      session.resolveExit();
       throw error;
     }
 
@@ -257,12 +276,19 @@ export class ProcessSessionManager {
       session.process.resize(session.columns, session.rows);
     }
 
-    const interruptRequested = chars.includes("\u0003") && session.running;
-    if (interruptRequested) {
-      session.process?.kill("SIGINT");
+    if (session.isPty) {
+      // A terminal driver turns Ctrl-C into SIGINT for the foreground process
+      // group. Writing the byte preserves that behavior (and raw-mode input)
+      // while keeping ordinary terminal input unchanged.
+      if (chars && session.running) session.process?.write(chars);
+    } else {
+      const interruptRequested = chars.includes("\u0003") && session.running;
+      if (interruptRequested) {
+        session.process?.kill("SIGINT");
+      }
+      const writableChars = chars.replaceAll("\u0003", "");
+      if (writableChars && session.running) session.process?.write(writableChars);
     }
-    const writableChars = chars.replaceAll("\u0003", "");
-    if (writableChars && session.running) session.process?.write(writableChars);
 
     if ((interactionRequested || !session.buffer.hasOutput()) && session.running) {
       const fallback = interactionRequested ? DEFAULT_INTERACTIVE_YIELD_MS : DEFAULT_POLL_YIELD_MS;
@@ -281,12 +307,64 @@ export class ProcessSessionManager {
     if (session.running) session.process?.kill("SIGTERM");
   }
 
-  shutdown(): void {
-    for (const session of this.sessions.values()) {
+  shutdown(): Promise<void> {
+    this.shutdownPromise ??= this.performShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async performShutdown(): Promise<void> {
+    this.shuttingDown = true;
+    this.shutdownPhase = "graceful";
+    const sessions = Array.from(this.sessions.values());
+
+    for (const session of sessions) {
       if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
-      if (session.running) session.process?.kill("SIGTERM");
+      this.killSession(session, "SIGTERM");
+    }
+
+    await this.waitForSessions(sessions, this.shutdownGracePeriodMs);
+
+    this.shutdownPhase = "forced";
+    if (process.platform !== "win32") {
+      for (const session of sessions) {
+        if (session.running) this.killSession(session, "SIGKILL");
+      }
+    }
+
+    await Promise.all(sessions.map((session) => session.exitPromise));
+
+    for (const session of sessions) {
+      if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
     }
     this.sessions.clear();
+    this.shutdownPhase = undefined;
+  }
+
+  private killSession(session: ProcessSession, signal: NodeJS.Signals): void {
+    if (!session.running) return;
+    try {
+      session.process?.kill(signal);
+    } catch {
+      // The close/exit event is the source of truth for session completion. A
+      // process can disappear between the running check and this signal.
+    }
+  }
+
+  private async waitForSessions(
+    sessions: ProcessSession[],
+    timeoutMs: number,
+  ): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        Promise.all(sessions.map((session) => session.exitPromise)),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async waitForExit(session: ProcessSession, yieldTimeMs: number): Promise<void> {
@@ -312,6 +390,7 @@ export class ProcessSessionManager {
     return {
       id: this.nextSessionId++,
       workspaceId: input.workspaceId,
+      isPty: input.tty === true && process.platform !== "win32",
       startedAt: Date.now(),
       columns: terminalSize(input.columns, DEFAULT_COLUMNS),
       rows: terminalSize(input.rows, DEFAULT_ROWS),
@@ -325,7 +404,7 @@ export class ProcessSessionManager {
   private startPipe(session: ProcessSession, input: StartCommandInput): void {
     const shell = resolveShellCommand(input.command);
     const detached = process.platform !== "win32";
-    const child = spawn(input.command, {
+    const child = spawn(shell.executable, shell.args, {
       cwd: input.cwd,
       env: processEnvironment({
         workspaceId: input.workspaceId,
@@ -334,14 +413,13 @@ export class ProcessSessionManager {
       stdio: "pipe",
       windowsHide: true,
       detached,
-      shell: shell.executable,
     });
 
-    session.process = {
+    this.attachProcess(session, {
       write: (data) => child.stdin.write(data),
       kill: (signal = "SIGTERM") => terminateProcessTree(child, signal, detached),
       resize: input.tty ? () => undefined : undefined,
-    };
+    });
     child.stdout.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
     child.stderr.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
     child.on("error", (error) => this.append(session, `${error.message}\n`));
@@ -373,11 +451,23 @@ export class ProcessSessionManager {
       throw error;
     }
 
-    session.process = {
+    this.attachProcess(session, {
       write: (data) => pty.write(data),
-      kill: (signal) => pty.kill(signal),
+      kill: (signal = "SIGTERM") => {
+        terminateProcessTree(
+          {
+            pid: pty.pid,
+            kill: (childSignal) => {
+              pty.kill(childSignal);
+              return true;
+            },
+          },
+          signal,
+          process.platform !== "win32",
+        );
+      },
       resize: (columns, rows) => pty.resize(columns, rows),
-    };
+    });
     pty.onData((data) => this.append(session, data));
     pty.onExit(({ exitCode, signal }) => {
       this.finish(session, exitCode, signal === 0 ? undefined : String(signal));
@@ -390,6 +480,7 @@ export class ProcessSessionManager {
     session.exitCode = exitCode;
     session.signal = signal;
     session.resolveExit();
+    if (this.shuttingDown) return;
     session.cleanupTimer = setTimeout(
       () => this.sessions.delete(session.id),
       this.completedSessionTtlMs,
@@ -399,6 +490,13 @@ export class ProcessSessionManager {
 
   private append(session: ProcessSession, output: string): void {
     session.buffer.append(output);
+  }
+
+  private attachProcess(session: ProcessSession, managedProcess: ManagedProcess): void {
+    session.process = managedProcess;
+    if (this.shuttingDown) {
+      this.killSession(session, this.shutdownPhase === "forced" ? "SIGKILL" : "SIGTERM");
+    }
   }
 
   private consume(session: ProcessSession, maxOutputTokens?: number): ProcessSnapshot {
