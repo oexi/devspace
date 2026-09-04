@@ -8,7 +8,7 @@ import {
   type LoadSkillsResult,
 } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
-import { expandHomePath, isPathInsideRoot } from "./roots.js";
+import { expandHomePath, isPathInsideRoot, resolveConfinedPath } from "./roots.js";
 
 export interface LoadedSkills {
   skills: Skill[];
@@ -82,17 +82,22 @@ export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSk
   };
 }
 
-export function resolveSkillReadPath(
+export async function resolveSkillReadPath(
   skills: Skill[],
   activatedSkillDirs: Set<string>,
   inputPath: string,
-): SkillReadResolution | undefined {
+): Promise<SkillReadResolution | undefined> {
   const absolutePath = resolve(expandHomePath(inputPath));
 
   for (const skill of skills) {
     const skillFilePath = resolve(skill.filePath);
     if (absolutePath === skillFilePath) {
-      return { absolutePath, skill, isSkillFile: true };
+      const confinedPath = await resolveConfinedPath(absolutePath, [skill.baseDir]);
+      return {
+        absolutePath: confinedPath,
+        skill,
+        isSkillFile: true,
+      };
     }
   }
 
@@ -101,7 +106,12 @@ export function resolveSkillReadPath(
     if (!activatedSkillDirs.has(baseDir)) continue;
     if (!isPathInsideRoot(absolutePath, baseDir)) continue;
 
-    return { absolutePath, skill, isSkillFile: false };
+    const confinedPath = await resolveConfinedPath(absolutePath, [baseDir]);
+    return {
+      absolutePath: confinedPath,
+      skill,
+      isSkillFile: false,
+    };
   }
 
   return undefined;

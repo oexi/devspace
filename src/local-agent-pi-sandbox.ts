@@ -1,8 +1,8 @@
-import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import {
   SandboxManager,
   type FilesystemConfig,
@@ -25,7 +25,7 @@ import {
   type ReadOperations,
   type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
-import { assertAllowedPath, isPathInsideRoot } from "./roots.js";
+import { resolveConfinedPath } from "./roots.js";
 import { terminateProcessTree } from "./process-platform.js";
 
 export type PiSandboxWriteMode = "read_only" | "allowed" | "full_access";
@@ -464,32 +464,7 @@ async function assertPiWorkspacePath(
   _forWrite = false,
 ): Promise<string> {
   const resolvedWorkspace = resolveWorkspace(workspace);
-  const absolutePath = resolve(path);
-  const { boundaryPath, suffix } = await resolveExistingBoundary(absolutePath);
-  if (!isPathInsideRoot(boundaryPath, resolvedWorkspace)) {
-    assertAllowedPath(boundaryPath, [resolvedWorkspace]);
-  }
-  const operationPath = suffix ? resolve(boundaryPath, suffix) : boundaryPath;
-  if (!isPathInsideRoot(operationPath, resolvedWorkspace)) {
-    assertAllowedPath(operationPath, [resolvedWorkspace]);
-  }
-  return operationPath;
-}
-
-async function resolveExistingBoundary(path: string): Promise<{ boundaryPath: string; suffix: string }> {
-  let candidate = path;
-  for (;;) {
-    try {
-      return {
-        boundaryPath: await realpath(candidate),
-        suffix: relative(candidate, path),
-      };
-    } catch {
-      const parent = dirname(candidate);
-      if (parent === candidate) return { boundaryPath: candidate, suffix: relative(candidate, path) };
-      candidate = parent;
-    }
-  }
+  return resolveConfinedPath(resolve(path), [resolvedWorkspace]);
 }
 
 async function withSandboxCommand<T>(operation: () => Promise<T>): Promise<T> {

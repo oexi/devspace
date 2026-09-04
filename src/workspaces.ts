@@ -12,9 +12,8 @@ import type { ServerConfig } from "./config.js";
 import { createManagedWorktree } from "./git-worktrees.js";
 import {
   AccessDeniedError,
-  assertAllowedPath,
   isPathInsideRoot,
-  resolveAllowedPath,
+  resolveConfinedPath,
 } from "./roots.js";
 import {
   loadWorkspaceSkills,
@@ -200,7 +199,7 @@ export class WorkspaceRegistry {
 
     let root: string;
     try {
-      root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+      root = await this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
       const rootStats = await stat(root);
       if (!rootStats.isDirectory()) return undefined;
     } catch (error) {
@@ -214,13 +213,13 @@ export class WorkspaceRegistry {
       throw error;
     }
 
-    const workspace = this.getWorkspace(binding.workspaceSessionId);
+    const workspace = await this.getWorkspace(binding.workspaceSessionId);
     if (workspace.mode !== "checkout" || workspace.root !== root) return undefined;
     return workspace;
   }
 
   private async conversationProjectKey(input: OpenWorkspaceInput): Promise<string> {
-    const path = assertAllowedPath(input.path, this.config.allowedRoots);
+    const path = await resolveConfinedPath(input.path, this.config.allowedRoots);
     return canonicalPath(path);
   }
 
@@ -242,9 +241,10 @@ export class WorkspaceRegistry {
     };
   }
 
-  getWorkspace(workspaceId: string): Workspace {
+  async getWorkspace(workspaceId: string): Promise<Workspace> {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
+      await this.assertWorkspaceRootAllowed(workspace.root, workspace.mode, workspace.sourceRoot);
       this.store?.touchSession(workspaceId);
       return workspace;
     }
@@ -256,7 +256,7 @@ export class WorkspaceRegistry {
       );
     }
 
-    const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+    const root = await this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
     const restoredWorkspace: Workspace = {
       id: session.id,
       root,
@@ -283,23 +283,25 @@ export class WorkspaceRegistry {
     return restoredWorkspace;
   }
 
-  resolvePath(workspace: Workspace, inputPath: string): string {
-    const absolutePath = resolveAllowedPath(inputPath, workspace.root, [workspace.root]);
-    if (!isPathInsideRoot(absolutePath, workspace.root)) {
-      throw new Error(`Path is outside workspace root: ${inputPath}`);
+  async resolvePath(workspace: Workspace, inputPath: string): Promise<string> {
+    try {
+      return await resolveConfinedPath(resolve(workspace.root, inputPath), [workspace.root]);
+    } catch (error) {
+      if (error instanceof AccessDeniedError) {
+        throw new Error(`Path is outside workspace root: ${inputPath}`);
+      }
+      throw error;
     }
-
-    return absolutePath;
   }
 
-  resolveReadPath(workspace: Workspace, inputPath: string): WorkspaceReadPath {
+  async resolveReadPath(workspace: Workspace, inputPath: string): Promise<WorkspaceReadPath> {
     try {
       return {
-        absolutePath: this.resolvePath(workspace, inputPath),
+        absolutePath: await this.resolvePath(workspace, inputPath),
         readRoots: [workspace.root],
       };
     } catch (workspaceError) {
-      const skillRead = resolveSkillReadPath(
+      const skillRead = await resolveSkillReadPath(
         workspace.skills,
         workspace.activatedSkillDirs,
         inputPath,
@@ -320,13 +322,15 @@ export class WorkspaceRegistry {
     }
   }
 
-  resolveWorkingDirectory(workspace: Workspace, workingDirectory: string | undefined): string {
-    const directory = workingDirectory ? this.resolvePath(workspace, workingDirectory) : workspace.root;
-    return assertAllowedPath(directory, [workspace.root]);
+  async resolveWorkingDirectory(workspace: Workspace, workingDirectory: string | undefined): Promise<string> {
+    const directory = workingDirectory
+      ? await this.resolvePath(workspace, workingDirectory)
+      : workspace.root;
+    return resolveConfinedPath(directory, [workspace.root]);
   }
 
   private async openCheckoutWorkspace(path: string): Promise<WorkspaceContext> {
-    const root = assertAllowedPath(path, this.config.allowedRoots);
+    const root = await resolveConfinedPath(path, this.config.allowedRoots);
     const rootStats = await ensureCheckoutWorkspaceRoot(root);
     if (!rootStats.isDirectory()) {
       throw new Error(`Workspace root must be a directory: ${path}`);
@@ -397,16 +401,20 @@ export class WorkspaceRegistry {
     };
   }
 
-  private assertWorkspaceRootAllowed(root: string, mode: WorkspaceMode, sourceRoot: string | undefined): string {
+  private async assertWorkspaceRootAllowed(
+    root: string,
+    mode: WorkspaceMode,
+    sourceRoot: string | undefined,
+  ): Promise<string> {
     if (mode === "worktree") {
       if (!sourceRoot) {
         throw new Error(`Stored worktree workspace is missing sourceRoot: ${root}`);
       }
-      assertAllowedPath(sourceRoot, this.config.allowedRoots);
-      return assertAllowedPath(root, [this.config.worktreeRoot]);
+      await resolveConfinedPath(sourceRoot, this.config.allowedRoots);
+      return resolveConfinedPath(root, [this.config.worktreeRoot]);
     }
 
-    return assertAllowedPath(root, this.config.allowedRoots);
+    return resolveConfinedPath(root, this.config.allowedRoots);
   }
 
   private async loadInitialAgentsFiles(root: string): Promise<LoadedAgentsFile[]> {
@@ -517,9 +525,8 @@ export function formatAgentsPath(path: string, workspaceRoot: string | undefined
   const relationship = relative(workspaceRoot, path);
   if (
     relationship === "" ||
-    relationship.startsWith("..") ||
     relationship === ".." ||
-    relationship.includes(`..${sep}`)
+    relationship.startsWith(`..${sep}`)
   ) {
     return path.split(sep).join("/");
   }

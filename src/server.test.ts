@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
@@ -84,6 +84,54 @@ test("open_workspace reports aggregate review availability", async (t) => {
 
   assert.equal((plainReview as { available: boolean }).available, false);
   assert.deepEqual(gitReview, { available: true });
+});
+
+test("open_workspace rejects a symlinked path whose missing target is outside the root", { skip: platform() === "win32" }, async (t) => {
+  const context = await fixture(t, { uiEnabled: false });
+  const outside = await mkdtemp(join(tmpdir(), "devspace-server-open-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const link = join(context.project, "outside-link");
+  const escapedWorkspace = join(link, "created-workspace");
+  await symlink(outside, link, "dir");
+
+  const result = await callOpen(context.client, escapedWorkspace);
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /outside allowed roots|outside workspace root/);
+  await assert.rejects(() => stat(join(outside, "created-workspace")), /ENOENT/);
+});
+
+test("direct read, write, and edit tools reject symlink escapes", { skip: platform() === "win32" }, async (t) => {
+  const context = await fixture(t, { toolMode: "claude", uiEnabled: false });
+  const outside = await mkdtemp(join(tmpdir(), "devspace-server-tools-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(join(outside, "secret.txt"), "secret\n");
+  await symlink(outside, join(context.project, "outside-link"), "dir");
+
+  const workspaceId = structuredContent(await callOpen(context.client, context.project)).workspaceId;
+  assert.equal(typeof workspaceId, "string");
+  const readResult = await context.client.callTool({
+    name: "read",
+    arguments: { workspaceId, path: "outside-link/secret.txt" },
+  });
+  const writeResult = await context.client.callTool({
+    name: "write",
+    arguments: { workspaceId, path: "outside-link/created.txt", content: "blocked\n" },
+  });
+  const editResult = await context.client.callTool({
+    name: "edit",
+    arguments: {
+      workspaceId,
+      path: "outside-link/secret.txt",
+      edits: [{ oldText: "secret", newText: "changed" }],
+    },
+  });
+
+  for (const result of [readResult, writeResult, editResult]) {
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /outside workspace root|outside allowed roots/);
+  }
+  assert.equal(await readFile(join(outside, "secret.txt"), "utf8"), "secret\n");
+  await assert.rejects(() => stat(join(outside, "created.txt")), /ENOENT/);
 });
 
 test("show_changes keeps model output compact and preserves the rich review card", async (t) => {

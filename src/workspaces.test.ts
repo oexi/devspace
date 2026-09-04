@@ -101,7 +101,7 @@ test("worktree opens require Git and create an isolated managed workspace", asyn
   assert.match(opened.agentsFiles.map((file) => file.content).join("\n"), /global instructions/);
   assert.match(opened.agentsFiles.map((file) => file.content).join("\n"), /git root instructions/);
 
-  const resolvedReadme = context.registry.resolvePath(opened.workspace, "README.md");
+  const resolvedReadme = await context.registry.resolvePath(opened.workspace, "README.md");
   assert.equal(resolvedReadme.startsWith(opened.workspace.root), true);
 });
 
@@ -119,8 +119,8 @@ test("persisted checkout and worktree sessions restore after recreating the regi
   const secondStore = new SqliteWorkspaceStore(stateDir);
   try {
     const restoredRegistry = new WorkspaceRegistry(context.config, secondStore);
-    const restoredCheckout = restoredRegistry.getWorkspace(checkout.workspace.id);
-    const restoredWorktree = restoredRegistry.getWorkspace(worktree.workspace.id);
+    const restoredCheckout = await restoredRegistry.getWorkspace(checkout.workspace.id);
+    const restoredWorktree = await restoredRegistry.getWorkspace(worktree.workspace.id);
 
     assert.equal(restoredCheckout.root, context.root);
     assert.equal(restoredCheckout.mode, "checkout");
@@ -139,6 +139,36 @@ test("workspace paths outside the allowed roots are rejected", async (t) => {
   await assert.rejects(
     () => context.registry.openWorkspace(context.outsideRoot),
     /outside allowed roots/,
+  );
+});
+
+test("a symlinked workspace path cannot create a checkout outside the allowed root", { skip: platform() === "win32" }, async (t) => {
+  const context = await fixture(t);
+  const link = join(context.root, "outside-link");
+  const escapedWorkspace = join(link, "created-workspace");
+  await symlink(context.outsideRoot, link, "dir");
+
+  await assert.rejects(
+    () => context.registry.openWorkspace(escapedWorkspace),
+    /outside allowed roots|outside workspace root/,
+  );
+  await assert.rejects(
+    () => stat(join(context.outsideRoot, "created-workspace")),
+    /ENOENT/,
+  );
+});
+
+test("workspace paths with names beginning with .. remain legal", async (t) => {
+  const context = await fixture(t);
+  const legalWorkspace = join(context.root, "..foo");
+  await mkdir(legalWorkspace);
+  await writeFile(join(legalWorkspace, "file.txt"), "legal\n");
+
+  const opened = await context.registry.openWorkspace(legalWorkspace);
+  assert.equal(opened.workspace.root, legalWorkspace);
+  assert.equal(
+    await context.registry.resolvePath(opened.workspace, "file.txt"),
+    join(legalWorkspace, "file.txt"),
   );
 });
 

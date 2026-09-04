@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
+import type { Skill } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config.js";
 import {
   effectiveSkillPaths,
@@ -232,18 +233,36 @@ try {
   assert.ok(projectSkill);
   assert.match(formatPathForPrompt(projectSkill.filePath), /SKILL\.md$/);
 
-  const skillFileRead = resolveSkillReadPath(loaded.skills, new Set(), projectSkill.filePath);
+  const skillFileRead = await resolveSkillReadPath(loaded.skills, new Set(), projectSkill.filePath);
   assert.equal(skillFileRead?.isSkillFile, true);
   assert.equal(skillFileRead?.absolutePath, projectSkill.filePath);
 
   const resourcePath = join(projectSkill.baseDir, "references.md");
   await writeFile(resourcePath, "reference\n");
-  assert.equal(resolveSkillReadPath(loaded.skills, new Set(), resourcePath), undefined);
+  assert.equal(await resolveSkillReadPath(loaded.skills, new Set(), resourcePath), undefined);
   assert.equal(
-    resolveSkillReadPath(loaded.skills, new Set([projectSkill.baseDir]), resourcePath)
+    (await resolveSkillReadPath(loaded.skills, new Set([projectSkill.baseDir]), resourcePath))
       ?.isSkillFile,
     false,
   );
+
+  if (process.platform !== "win32") {
+    const safeSkillDir = join(root, "safe-skill");
+    const outsideSkillFile = join(root, "outside-skill.md");
+    const unsafeSkillFile = join(safeSkillDir, "SKILL.md");
+    await mkdir(safeSkillDir);
+    await writeFile(outsideSkillFile, "outside skill\n");
+    await symlink(outsideSkillFile, unsafeSkillFile);
+
+    const unsafeSkill = {
+      baseDir: safeSkillDir,
+      filePath: unsafeSkillFile,
+    } as Skill;
+    await assert.rejects(
+      resolveSkillReadPath([unsafeSkill], new Set(), unsafeSkillFile),
+      /outside allowed roots/,
+    );
+  }
 } finally {
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;

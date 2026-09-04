@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { access, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
+import {
+  AccessDeniedError,
+  isPathInsideRoot,
+  resolveConfinedPath as resolveRealConfinedPath,
+} from "./roots.js";
 
 export type PatchOperation = "add" | "update" | "delete" | "move";
 
@@ -185,11 +190,6 @@ function isTopLevelHeader(line: string): boolean {
   );
 }
 
-function isInside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
 async function resolveConfinedPath(root: string, input: string): Promise<string> {
   if (!input || input.includes("\0") || isAbsolute(input)) {
     throw patchError(`path must be relative to the workspace: ${input}`);
@@ -197,28 +197,18 @@ async function resolveConfinedPath(root: string, input: string): Promise<string>
 
   const rootPath = await realpath(root);
   const target = resolve(rootPath, input);
-  if (!isInside(rootPath, target)) {
+  if (!isPathInsideRoot(target, rootPath)) {
     throw patchError(`path escapes the workspace: ${input}`);
   }
 
-  let existing = target;
-  while (true) {
-    try {
-      const resolved = await realpath(existing);
-      if (!isInside(rootPath, resolved)) {
-        throw patchError(`path resolves outside the workspace: ${input}`);
-      }
-      break;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") throw error;
-      const parent = dirname(existing);
-      if (parent === existing) throw error;
-      existing = parent;
+  try {
+    return await resolveRealConfinedPath(target, [rootPath]);
+  } catch (error) {
+    if (error instanceof AccessDeniedError) {
+      throw patchError(`path resolves outside the workspace: ${input}`);
     }
+    throw error;
   }
-
-  return target;
 }
 
 function splitFile(content: string): { lines: string[]; eol: string; finalNewline: boolean } {

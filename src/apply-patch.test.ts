@@ -62,6 +62,15 @@ assert.equal(await readFile(join(root, "alpha.txt"), "utf8"), "one\nchanged\nthr
 assert.equal(await readFile(join(root, "windows.txt"), "utf8"), "first\r\nupdated\r\n");
 await assert.rejects(readFile(join(root, "remove.txt"), "utf8"), /ENOENT/);
 
+await applyPatch(
+  root,
+  `*** Begin Patch
+*** Add File: ..foo.txt
++legal
+*** End Patch`,
+);
+assert.equal(await readFile(join(root, "..foo.txt"), "utf8"), "legal\n");
+
 if (process.platform !== "win32") await chmod(join(root, "alpha.txt"), 0o755);
 const moveResult = await applyPatch(
   root,

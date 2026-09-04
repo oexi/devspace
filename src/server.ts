@@ -586,8 +586,8 @@ export function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const readPath = workspaces.resolveReadPath(workspace, input.path);
+      const workspace = await workspaces.getWorkspace(workspaceId);
+      const readPath = await workspaces.resolveReadPath(workspace, input.path);
       const response = await readFileTool(
         { ...input, path: readPath.absolutePath },
         {
@@ -650,7 +650,7 @@ export function createMcpServer(
     },
     async ({ workspaceId }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       const reviewRef = typeof _meta?.["devspace/reviewRef"] === "string"
         ? _meta["devspace/reviewRef"]
         : undefined;
