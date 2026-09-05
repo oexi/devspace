@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { McpSessionRegistry } from "./mcp-sessions.js";
+import {
+  McpSessionRegistry,
+  resolveMcpSessionRoute,
+} from "./mcp-sessions.js";
 
 interface FakeTransport {
   closeCalls: number;
@@ -84,3 +87,30 @@ finishDelayedClose?.();
 await delayedClose;
 assert.equal(delayedCloseResolved, true);
 assert.equal(registry.size, 0);
+
+const routingRegistry = new McpSessionRegistry<FakeTransport>();
+const routedTransport = createTransport();
+routingRegistry.register("existing-session", routedTransport);
+
+assert.deepEqual(
+  resolveMcpSessionRoute(routingRegistry, "existing-session", true),
+  { kind: "initialize" },
+  "a refresh initialize must start a new transport instead of reusing the old session",
+);
+assert.deepEqual(
+  resolveMcpSessionRoute(routingRegistry, "stale-session", true),
+  { kind: "initialize" },
+  "a stale session header must not block a fresh initialize request",
+);
+assert.deepEqual(
+  resolveMcpSessionRoute(routingRegistry, "existing-session", false),
+  { kind: "existing", transport: routedTransport },
+);
+assert.deepEqual(
+  resolveMcpSessionRoute(routingRegistry, "stale-session", false),
+  { kind: "unknown" },
+);
+assert.deepEqual(
+  resolveMcpSessionRoute(routingRegistry, undefined, false),
+  { kind: "missing" },
+);

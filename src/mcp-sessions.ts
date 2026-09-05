@@ -16,6 +16,12 @@ export interface McpSessionRegistryOptions {
   now?: () => number;
 }
 
+export type McpSessionRoute<TTransport> =
+  | { kind: "initialize" }
+  | { kind: "existing"; transport: TTransport }
+  | { kind: "unknown" }
+  | { kind: "missing" };
+
 export class McpSessionRegistry<TTransport extends ClosableMcpTransport> {
   private readonly sessions = new Map<string, McpSessionEntry<TTransport>>();
   private readonly now: () => number;
@@ -69,6 +75,31 @@ export class McpSessionRegistry<TTransport extends ClosableMcpTransport> {
     this.sessions.clear();
     return closeSessions(sessions);
   }
+}
+
+/**
+ * Decide how an incoming Streamable HTTP request should be routed.
+ *
+ * Initialization deliberately wins over an inherited/stale MCP session ID.
+ * Some clients restore a conversation after a page refresh and send a fresh
+ * initialize request while still carrying the previous session header. Routing
+ * that request to the old transport makes the SDK reject it as an attempted
+ * re-initialization; if the old transport has already disappeared, the server
+ * returns 404 before the client gets a chance to establish a replacement
+ * session. Treating initialize as a fresh session keeps reconnects recoverable.
+ */
+export function resolveMcpSessionRoute<TTransport extends ClosableMcpTransport>(
+  registry: McpSessionRegistry<TTransport>,
+  sessionId: string | undefined,
+  initializeRequest: boolean,
+): McpSessionRoute<TTransport> {
+  if (initializeRequest) return { kind: "initialize" };
+  if (!sessionId) return { kind: "missing" };
+
+  const transport = registry.get(sessionId);
+  return transport
+    ? { kind: "existing", transport }
+    : { kind: "unknown" };
 }
 
 async function closeSessions<TTransport extends ClosableMcpTransport>(

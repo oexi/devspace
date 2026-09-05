@@ -36,6 +36,7 @@ import { readFileTool } from "./pi-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import {
   McpSessionRegistry,
+  resolveMcpSessionRoute,
   type McpSessionCloseResult,
 } from "./mcp-sessions.js";
 import { ProcessSessionManager } from "./process-sessions.js";
@@ -943,13 +944,13 @@ export function createServer(
     try {
       let transport: Transport | undefined;
 
-      if (sessionId) {
-        transport = transports.get(sessionId);
-        if (!transport) {
-          sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
-          return;
-        }
-      } else if (initializeRequest) {
+      const sessionRoute = resolveMcpSessionRoute(
+        transports,
+        sessionId,
+        initializeRequest,
+      );
+
+      if (sessionRoute.kind === "initialize") {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
@@ -981,6 +982,11 @@ export function createServer(
           incomingArtifactAdapters,
         );
         await server.connect(transport);
+      } else if (sessionRoute.kind === "existing") {
+        transport = sessionRoute.transport;
+      } else if (sessionRoute.kind === "unknown") {
+        sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
+        return;
       } else {
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");
         return;
