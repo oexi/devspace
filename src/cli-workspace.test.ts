@@ -8,17 +8,32 @@ import { resolveCliWorkspaceContext } from "./cli-workspace.js";
 const root = mkdtempSync(join(tmpdir(), "devspace-cli-workspace-test-"));
 try {
   const repository = join(root, "repository");
+  const otherRepository = join(root, "other-repository");
   const nested = join(repository, "packages", "app");
   const plainDirectory = join(root, "plain");
   mkdirSync(nested, { recursive: true });
+  mkdirSync(otherRepository);
   mkdirSync(plainDirectory);
   execFileSync("git", ["init", "--quiet", repository]);
+  execFileSync("git", ["init", "--quiet", otherRepository]);
+  execFileSync(
+    "git",
+    ["-c", "user.name=DevSpace Test", "-c", "user.email=devspace@example.test", "commit", "--allow-empty", "-m", "initial"],
+    { cwd: repository, stdio: "ignore" },
+  );
+  const worktree = join(root, "repository-worktree");
+  execFileSync("git", ["worktree", "add", "--detach", worktree, "HEAD"], {
+    cwd: repository,
+    stdio: "ignore",
+  });
   // Git returns canonical paths, while macOS and Windows temp directories may
   // be reported through aliases such as /var or an 8.3 short path.
   const allowedRoot = realpathSync.native(root);
   const repositoryRoot = realpathSync.native(repository);
+  const otherRepositoryRoot = realpathSync.native(otherRepository);
   const nestedRoot = realpathSync.native(nested);
   const plainRoot = realpathSync.native(plainDirectory);
+  const worktreeRoot = realpathSync.native(worktree);
 
   assert.deepEqual(resolveCliWorkspaceContext([plainRoot], {}, nestedRoot), {
     workspaceId: undefined,
@@ -43,6 +58,30 @@ try {
   }, plainRoot), {
     workspaceId: "ws_injected",
     workspaceRoot: resolve(nestedRoot),
+  });
+
+  assert.deepEqual(resolveCliWorkspaceContext([repositoryRoot], {
+    DEVSPACE_WORKSPACE_ID: "ws_injected",
+    DEVSPACE_WORKSPACE_ROOT: repositoryRoot,
+  }, worktreeRoot), {
+    workspaceId: undefined,
+    workspaceRoot: resolve(worktreeRoot),
+  });
+
+  assert.deepEqual(resolveCliWorkspaceContext([nestedRoot], {
+    DEVSPACE_WORKSPACE_ID: "ws_injected",
+    DEVSPACE_WORKSPACE_ROOT: nestedRoot,
+  }, nestedRoot), {
+    workspaceId: "ws_injected",
+    workspaceRoot: resolve(nestedRoot),
+  });
+
+  assert.deepEqual(resolveCliWorkspaceContext([repositoryRoot], {
+    DEVSPACE_WORKSPACE_ID: "ws_injected",
+    DEVSPACE_WORKSPACE_ROOT: repositoryRoot,
+  }, otherRepositoryRoot), {
+    workspaceId: "ws_injected",
+    workspaceRoot: resolve(repositoryRoot),
   });
 
   if (process.platform !== "win32") {

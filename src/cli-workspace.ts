@@ -16,8 +16,24 @@ export function resolveCliWorkspaceContext(
 ): CliWorkspaceContext {
   const workspaceId = env.DEVSPACE_WORKSPACE_ID?.trim() || undefined;
   const injectedRoot = workspaceId ? env.DEVSPACE_WORKSPACE_ROOT?.trim() : undefined;
+  const cwdGitRoot = findGitRoot(cwd);
+
+  if (workspaceId && injectedRoot && cwdGitRoot) {
+    const injectedGitRoot = findGitRoot(injectedRoot);
+    if (
+      injectedGitRoot &&
+      canonicalizePath(cwdGitRoot) !== canonicalizePath(injectedGitRoot) &&
+      sameGitRepository(cwd, injectedRoot)
+    ) {
+      return {
+        workspaceId: undefined,
+        workspaceRoot: canonicalizePath(cwdGitRoot),
+      };
+    }
+  }
+
   const candidate = canonicalizePath(
-    injectedRoot ? resolve(injectedRoot) : findGitRoot(cwd) ?? resolve(cwd),
+    injectedRoot ? resolve(injectedRoot) : cwdGitRoot ?? resolve(cwd),
   );
 
   if (!workspaceId) return { workspaceId, workspaceRoot: candidate };
@@ -46,4 +62,30 @@ function findGitRoot(cwd: string): string | undefined {
   if (result.status !== 0) return undefined;
   const root = result.stdout.trim();
   return root ? resolve(root) : undefined;
+}
+
+function sameGitRepository(first: string, second: string): boolean {
+  const firstCommonDir = findGitCommonDir(first);
+  const secondCommonDir = findGitCommonDir(second);
+  return Boolean(
+    firstCommonDir &&
+    secondCommonDir &&
+    canonicalizePath(firstCommonDir) === canonicalizePath(secondCommonDir),
+  );
+}
+
+function findGitCommonDir(cwd: string): string | undefined {
+  const result = spawnSync(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    {
+      cwd: resolve(cwd),
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+  if (result.status !== 0) return undefined;
+  const commonDir = result.stdout.trim();
+  return commonDir ? resolve(commonDir) : undefined;
 }

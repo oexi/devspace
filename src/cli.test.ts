@@ -39,6 +39,17 @@ try {
   mkdirSync(stateDir, { recursive: true });
   mkdirSync(join(configDir, "agents"), { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
+  execFileSync("git", ["init", "--quiet", projectRoot]);
+  execFileSync(
+    "git",
+    ["-c", "user.name=DevSpace Test", "-c", "user.email=devspace@example.test", "commit", "--allow-empty", "-m", "initial"],
+    { cwd: projectRoot, stdio: "ignore" },
+  );
+  const worktreeRoot = join(root, "project-worktree");
+  execFileSync("git", ["worktree", "add", "--detach", worktreeRoot, "HEAD"], {
+    cwd: projectRoot,
+    stdio: "ignore",
+  });
   const cliConfigEnv = writeTestDevspaceConfig(configDir, {
     workspaces: { allowedRoots: [projectRoot] },
     storage: { stateDir },
@@ -151,6 +162,21 @@ try {
     });
 
     assert.equal(output.trim(), `${current.id} completed reviewer`);
+
+    await execFileAsync("node", ["--import", tsxLoader, cliPath, "agents", "ls", "--json"], {
+      cwd: worktreeRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...cliConfigEnv,
+        DEVSPACE_WORKSPACE_ID: "ws_current",
+        DEVSPACE_WORKSPACE_ROOT: projectRoot,
+      },
+    });
+    const worktreeList = [...daemonRequests].reverse().find((request) => request.method === "agent.list");
+    assert.deepEqual(worktreeList?.params, {
+      workspaceRoot: realpathSync.native(worktreeRoot),
+    });
 
     const { stdout: jsonOutput } = await execFileAsync(
       "node",
