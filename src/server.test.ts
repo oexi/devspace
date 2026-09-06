@@ -64,6 +64,31 @@ test("enabled subagents expose bounded high-level task tools", async (t) => {
   assert.match(context.client.getInstructions() ?? "", /prefer run_task as one bounded implementation task/i);
 });
 
+test("tracked MCP tool handlers run through the activity wrapper", async (t) => {
+  let active = 0;
+  let completed = 0;
+  const context = await fixture(t, {
+    uiEnabled: false,
+    trackToolActivity: async (operation) => {
+      active += 1;
+      try {
+        return await operation();
+      } finally {
+        active -= 1;
+        completed += 1;
+      }
+    },
+  });
+
+  await context.client.callTool({
+    name: "open_workspace",
+    arguments: { path: context.project },
+  });
+
+  assert.equal(active, 0);
+  assert.equal(completed, 1);
+});
+
 test("run_task changes participate in the turn-scoped show_changes review", async (t) => {
   let taskRecord: LocalAgentRecord | undefined;
   const taskClient = {
@@ -651,6 +676,7 @@ async function fixture(
     toolMode?: ToolMode;
     uiEnabled?: boolean;
     taskAgentClient?: LocalTaskAgentClient;
+    trackToolActivity?: <T>(operation: () => Promise<T>) => Promise<T>;
   } = {},
 ): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
@@ -727,6 +753,7 @@ async function fixture(
     resolveLocalAgentProviders,
     [],
     options.taskAgentClient,
+    options.trackToolActivity,
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "devspace-test-client", version: "1.0.0" });

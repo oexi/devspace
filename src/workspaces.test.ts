@@ -156,6 +156,27 @@ test("persisted checkout and worktree sessions restore after recreating the regi
   }
 });
 
+test("persisted workspace cache is bounded and evicted sessions restore on demand", async (t) => {
+  const context = await fixture(t);
+  const stateDir = join(context.root, ".bounded-cache-state");
+  const store = new SqliteWorkspaceStore(stateDir);
+  try {
+    const registry = new WorkspaceRegistry(context.config, store);
+
+    const first = await registry.openWorkspace(context.root);
+    for (let index = 0; index < 32; index += 1) {
+      await registry.openWorkspace(context.root);
+    }
+
+    const restored = await registry.getWorkspace(first.workspace.id);
+    assert.notEqual(restored, first.workspace);
+    assert.equal(restored.id, first.workspace.id);
+    assert.equal(restored.root, first.workspace.root);
+  } finally {
+    store.close();
+  }
+});
+
 test("workspace paths outside the allowed roots are rejected", async (t) => {
   const context = await fixture(t);
 

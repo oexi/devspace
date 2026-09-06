@@ -41,7 +41,7 @@ import {
 } from "./mcp-sessions.js";
 import { ProcessSessionManager } from "./process-sessions.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
-import { openAiConversationScopeId } from "./request-meta.js";
+import { conversationScopeIdFromRequestMeta } from "./request-meta.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
@@ -93,6 +93,26 @@ interface RunningServer {
   config: ServerConfig;
   localAgentProviders: LocalAgentProviderStatus[];
   close(): Promise<void>;
+}
+
+type TrackToolActivity = <T>(operation: () => Promise<T>) => Promise<T>;
+
+class ToolActivityTracker {
+  private readonly active = new Set<Promise<unknown>>();
+
+  readonly track: TrackToolActivity = <T>(operation: () => Promise<T>): Promise<T> => {
+    const promise = operation();
+    this.active.add(promise);
+    const remove = () => this.active.delete(promise);
+    void promise.then(remove, remove);
+    return promise;
+  };
+
+  async waitForIdle(): Promise<void> {
+    while (this.active.size > 0) {
+      await Promise.allSettled(Array.from(this.active));
+    }
+  }
 }
 
 interface WorkspaceAppManifestEntry {
@@ -300,6 +320,7 @@ export function createMcpServer(
   resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
   taskAgentClient?: LocalTaskAgentClient,
+  trackToolActivity?: TrackToolActivity,
 ): McpServer {
   const toolSurface = getToolSurface(config.toolMode);
   const server = new McpServer(
@@ -314,9 +335,12 @@ export function createMcpServer(
       instructions: serverInstructions(config, toolSurface),
     },
   );
+  const registrationTarget = trackToolActivity
+    ? withTrackedToolHandlers(server, trackToolActivity)
+    : server;
 
   registerAppResource(
-    server,
+    registrationTarget,
     "DevSpace Diff Card",
     WORKSPACE_APP_URI,
     {
@@ -347,7 +371,7 @@ export function createMcpServer(
   );
 
   registerAppTool(
-    server,
+    registrationTarget,
     "open_workspace",
     {
       title: "Open workspace",
@@ -413,7 +437,7 @@ export function createMcpServer(
         includeBootstrapContext,
       } = await workspaces.openWorkspace(
         { path, mode, baseRef },
-        { conversationScopeId: openAiConversationScopeId(_meta) },
+        { conversationScopeId: conversationScopeIdFromRequestMeta(_meta) },
       );
       const review = await reviewCheckpoints.initializeWorkspace({
         workspaceId: workspace.id,
@@ -554,7 +578,7 @@ export function createMcpServer(
     },
   );
 
-  server.registerTool(
+  registrationTarget.registerTool(
     toolNames.read,
     {
       title: "Read file",
@@ -636,7 +660,7 @@ export function createMcpServer(
   );
 
   registerLocalTaskTools({
-    server,
+    server: registrationTarget,
     config,
     workspaces,
     reviewCheckpoints,
@@ -645,7 +669,7 @@ export function createMcpServer(
   });
 
   toolSurface.register({
-    server,
+    server: registrationTarget,
     config,
     workspaces,
     processSessions,
@@ -653,7 +677,7 @@ export function createMcpServer(
   });
 
   registerAppTool(
-    server,
+    registrationTarget,
     "show_changes",
     {
       title: "Show changes",
@@ -717,7 +741,7 @@ export function createMcpServer(
   );
 
   if (config.artifactsEnabled && isArtifactDownloadSupportedPlatform()) {
-    registerArtifactTools(server, {
+    registerArtifactTools(registrationTarget, {
       config,
       workspaces,
       reviewCheckpoints,
@@ -726,6 +750,24 @@ export function createMcpServer(
   }
 
   return server;
+}
+
+function withTrackedToolHandlers(
+  server: McpServer,
+  trackToolActivity: TrackToolActivity,
+): McpServer {
+  return {
+    registerTool: ((...args: unknown[]) => {
+      const handler = args.at(-1) as (...handlerArgs: unknown[]) => unknown;
+      return (server.registerTool as (...callArgs: unknown[]) => unknown)(
+        ...args.slice(0, -1),
+        (...handlerArgs: unknown[]) => trackToolActivity(
+          () => Promise.resolve(handler(...handlerArgs)),
+        ),
+      );
+    }) as McpServer["registerTool"],
+    registerResource: server.registerResource.bind(server),
+  } as unknown as McpServer;
 }
 
 export interface CreateServerOptions {
@@ -758,6 +800,7 @@ export function createServer(
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
+  const toolActivities = new ToolActivityTracker();
   const localAgentProviders = buildLocalAgentProviderStatuses(
     config.subagents,
     getLocalAgentProviderAvailabilitySnapshot(),
@@ -980,6 +1023,8 @@ export function createServer(
           processSessions,
           resolveLocalAgentProviders,
           incomingArtifactAdapters,
+          undefined,
+          toolActivities.track,
         );
         await server.connect(transport);
       } else if (sessionRoute.kind === "existing") {
@@ -1014,6 +1059,7 @@ export function createServer(
         clearInterval(sessionCleanupTimer);
         clearInterval(workspaceCleanupTimer);
         await workspaceCleanupPromise;
+        await toolActivities.waitForIdle();
         const results = await transports.closeAll();
         logSessionCloseResults("server_shutdown", results);
         await processSessions.shutdown();
