@@ -1,10 +1,14 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import type { LookupAddress } from "node:dns";
-import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { InvalidClientError, OAuthError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import type { OAuthClientInformationFull } from "@modelcontextprotocol/server";
 import ipaddr from "ipaddr.js";
 import * as z from "zod/v4";
+import {
+  InvalidClientError,
+  OAuthAuthorizationError,
+  ServerError,
+} from "./oauth-authorization.js";
 
 const MAX_METADATA_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -56,8 +60,9 @@ export class HttpsClientMetadataDocumentResolver implements ClientMetadataDocume
     try {
       fetched = await fetchClientMetadataDocument(clientUrl);
     } catch (error) {
-      if (error instanceof OAuthError) throw error;
-      // The SDK masks ordinary exceptions as "Internal Server Error". Do not
+      if (error instanceof OAuthAuthorizationError) throw error;
+      // The legacy authorization router masks ordinary exceptions as
+      // "Internal Server Error". Do not
       // expose raw network errors, which may contain URLs or local addresses.
       throw new ServerError("Could not fetch OAuth Client ID Metadata Document; check DevSpace's outbound DNS and HTTPS connectivity and retry");
     }

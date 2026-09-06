@@ -23,18 +23,21 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: ^0.80.3
         version: 0.80.3(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
+      '@modelcontextprotocol/express':
+        specifier: ^2.0.0
+        version: 2.0.0(@modelcontextprotocol/server@2.0.0)(express@5.2.1)
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.5
         version: 1.7.5(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(zod@4.4.3)
       '@modelcontextprotocol/node':
         specifier: ^2.0.0
         version: 2.0.0(@modelcontextprotocol/server@2.0.0)(hono@4.12.25)
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.30.0
-        version: 1.30.0(zod@4.4.3)
       '@modelcontextprotocol/server':
         specifier: ^2.0.0
         version: 2.0.0
+      '@modelcontextprotocol/server-legacy':
+        specifier: ^2.0.0
+        version: 2.0.0(express@5.2.1)
       '@opencode-ai/sdk':
         specifier: ^1.17.13
         version: 1.17.13
@@ -84,6 +87,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@modelcontextprotocol/client':
+        specifier: ^2.0.0
+        version: 2.0.0
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
@@ -585,9 +591,20 @@ packages:
       '@opentelemetry/api':
         optional: true
 
+  '@modelcontextprotocol/client@2.0.0':
+    resolution: {integrity: sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw==}
+    engines: {node: '>=20'}
+
   '@modelcontextprotocol/core@2.0.0':
     resolution: {integrity: sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==}
     engines: {node: '>=20'}
+
+  '@modelcontextprotocol/express@2.0.0':
+    resolution: {integrity: sha512-Snlr8j9FR9LcVvEJPF7qJ7d5zTL4Bes2dk7RcacN9eSZ7OLohwxqhEvWu1+UxELyScgLbLLOdeVEGdwKI1iwVQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@modelcontextprotocol/server': ^2.0.0
+      express: ^4.18.0 || ^5.0.0
 
   '@modelcontextprotocol/ext-apps@1.7.5':
     resolution: {integrity: sha512-TjPH2S2y5UEGKhmI6+XGFuqfqOV4ppe1x6DA3txnUaEWkgtA4G5vo14jGKFZmegdkZ1H4QMLyujLvoU1BEdnAg==}
@@ -621,6 +638,16 @@ packages:
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
       '@cfworker/json-schema':
+        optional: true
+
+  '@modelcontextprotocol/server-legacy@2.0.0':
+    resolution: {integrity: sha512-LnffC1BSqFMHtMQxEz92lqDpHWma+ErV3ghdHDgdkCyYzVcCYKcUT5loq4kflty+Bf9C9qjJqbnphyBWyCqo8Q==}
+    engines: {node: '>=20'}
+    deprecated: This package is a frozen copy of v1's SSE transport and OAuth Authorization Server helpers for migration purposes only. Use StreamableHTTP from @modelcontextprotocol/server and a dedicated OAuth server in production. Will not receive new features.
+    peerDependencies:
+      express: ^4.18.0 || ^5.0.0
+    peerDependenciesMeta:
+      express:
         optional: true
 
   '@modelcontextprotocol/server@2.0.0':
@@ -2636,9 +2663,25 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  '@modelcontextprotocol/client@2.0.0':
+    dependencies:
+      '@modelcontextprotocol/core': 2.0.0
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.0
+      jose: 6.2.3
+      pkce-challenge: 5.0.1
+      zod: 4.4.3
+
   '@modelcontextprotocol/core@2.0.0':
     dependencies:
       zod: 4.4.3
+
+  '@modelcontextprotocol/express@2.0.0(@modelcontextprotocol/server@2.0.0)(express@5.2.1)':
+    dependencies:
+      '@modelcontextprotocol/server': 2.0.0
+      cors: 2.8.6
+      express: 5.2.1
 
   '@modelcontextprotocol/ext-apps@1.7.5(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(zod@4.4.3)':
     dependencies:
@@ -2677,6 +2720,18 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@4.4.3)
     transitivePeerDependencies:
       - supports-color
+
+  '@modelcontextprotocol/server-legacy@2.0.0(express@5.2.1)':
+    dependencies:
+      '@modelcontextprotocol/core': 2.0.0
+      content-type: 1.0.5
+      cors: 2.8.6
+      express-rate-limit: 8.5.2(express@5.2.1)
+      pkce-challenge: 5.0.1
+      raw-body: 3.0.2
+      zod: 4.4.3
+    optionalDependencies:
+      express: 5.2.1
 
   '@modelcontextprotocol/server@2.0.0':
     dependencies:

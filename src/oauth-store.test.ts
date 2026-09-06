@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { databasePath, openDatabase } from "./db/client.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
+import { InvalidGrantError } from "./oauth-authorization.js";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-oauth-test-"));
 const oauthConfig = {

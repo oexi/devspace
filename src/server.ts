@@ -2,15 +2,19 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import {
+  createMcpExpressApp,
+  getOAuthProtectedResourceMetadataUrl,
+  requireBearerAuth,
+} from "@modelcontextprotocol/express";
+import {
+  bearerAuthChallengeResponse,
   buildOAuthProtectedResourceMetadata,
   checkResourceAllowed,
   createMcpHandler,
-  getOAuthProtectedResourceMetadataUrl,
+  OAuthError,
+  OAuthErrorCode,
   oauthMetadataResponse,
-  requireBearerAuth,
   resourceUrlFromServerUrl,
   type OAuthMetadata,
 } from "@modelcontextprotocol/server";
@@ -40,6 +44,7 @@ import {
 import { readFileTool } from "./pi-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import type { ClientMetadataDocumentResolver } from "./oauth-client-metadata.js";
+import { createLegacyOAuthRouter } from "./oauth-legacy-compat.js";
 import {
   compileMcpRegistrationSurface,
   createModernMcpServerAdapter,
@@ -995,16 +1000,14 @@ export function createServer(
     }
   });
 
-  app.use(
-    mcpAuthRouter({
-      provider: oauthProvider,
-      issuerUrl: new URL(config.publicBaseUrl),
-      baseUrl: new URL(config.publicBaseUrl),
-      resourceServerUrl,
-      scopesSupported: config.oauth.scopes,
-      resourceName: "DevSpace",
-    }),
-  );
+  app.use(createLegacyOAuthRouter({
+    provider: oauthProvider,
+    issuerUrl,
+    baseUrl: issuerUrl,
+    resourceServerUrl,
+    scopesSupported: config.oauth.scopes,
+    resourceName: "DevSpace",
+  }));
 
   app.options("/mcp-app-assets/{*asset}", (_req, res) => {
     setAssetHeaders(res);
@@ -1025,18 +1028,10 @@ export function createServer(
     res.json({ ok: true, name: "devspace" });
   });
 
-  app.all("/mcp", async (req, res) => {
+  app.all("/mcp", bearerAuth, async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
 
-    const auth = await bearerAuth(await toWebRequest(req, req.body));
-    if (auth instanceof globalThis.Response) {
-      await sendWebResponse(res, auth);
-      return;
-    }
-    const authenticatedRequest = req as Request & { auth?: typeof auth };
-    authenticatedRequest.auth = auth;
-
-    if (!authenticatedRequest.auth?.resource || !checkResourceAllowed({ requestedResource: authenticatedRequest.auth.resource, configuredResource: resourceServerUrl })) {
+    if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
       logEvent(config.logging, "warn", "auth_denied", {
         requestId,
         method: req.method,
@@ -1044,7 +1039,18 @@ export function createServer(
         reason: "invalid_oauth_resource",
         ...requestLogFields(req, config),
       });
-      sendJsonRpcError(res, 401, -32001, "Unauthorized");
+      await sendWebResponse(
+        res,
+        bearerAuthChallengeResponse(
+          new OAuthError(
+            OAuthErrorCode.InvalidToken,
+            "Access token is not valid for this resource",
+          ),
+          {
+            resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
+          },
+        ),
+      );
       return;
     }
 

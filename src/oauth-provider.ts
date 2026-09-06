@@ -1,14 +1,11 @@
 import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypto";
 import type { Response } from "express";
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
-import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import { AccessDeniedError, InvalidGrantError, InvalidRequestError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type {
+  AuthInfo,
   OAuthClientInformationFull,
   OAuthTokenRevocationRequest,
   OAuthTokens,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+} from "@modelcontextprotocol/server";
 import {
   checkResourceAllowed,
   OAuthError,
@@ -21,6 +18,14 @@ import {
   parseClientMetadataUrl,
   type ClientMetadataDocumentResolver,
 } from "./oauth-client-metadata.js";
+import {
+  AccessDeniedError,
+  InvalidGrantError,
+  InvalidRequestError,
+  type AuthorizationParams,
+  type OAuthRegisteredClientsStore,
+  type OAuthServerProvider,
+} from "./oauth-authorization.js";
 
 export interface OAuthConfig {
   ownerToken: string;

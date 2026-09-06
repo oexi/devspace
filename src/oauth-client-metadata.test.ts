@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { InvalidClientError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { chatGptClientMetadata, mockClientMetadataEndpoint } from "./test-support/oauth-client-metadata.test.js";
 import {
   HttpsClientMetadataDocumentResolver,
   isPublicClientMetadataAddress,
   parseClientMetadataUrl,
 } from "./oauth-client-metadata.js";
+import { InvalidClientError, ServerError } from "./oauth-authorization.js";
 
 test("client metadata URLs require HTTPS, a non-root path, and public literal addresses", () => {
   assert.equal(parseClientMetadataUrl("https://client.example.com/oauth/client.json")?.href,

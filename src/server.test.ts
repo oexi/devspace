@@ -6,9 +6,7 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Result } from "better-result";
 import { loadConfig, type ServerConfig, type ToolMode } from "./config.js";
 import type { LocalAgentProviderAvailability } from "./local-agent-availability.js";
@@ -19,6 +17,8 @@ import type { LocalAgentRecord } from "./local-agent-store.js";
 import type { ClientMetadataDocumentResolver } from "./oauth-client-metadata.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
+import { createModernMcpServerAdapter } from "./mcp-modern-server.js";
+import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
 import {
   createServer,
   mcpServerInstructions,
@@ -297,11 +297,11 @@ test("show_changes keeps model output compact and preserves the rich review card
   const tools = await context.client.listTools();
   const outputProperties = tools.tools.find((tool) => tool.name === "show_changes")
     ?.outputSchema?.properties;
-  assert.ok(outputProperties && "workspaceId" in outputProperties);
-  assert.ok(outputProperties && "reviewRef" in outputProperties);
-  assert.equal(outputProperties && "summary" in outputProperties, false);
-  assert.equal(outputProperties && "files" in outputProperties, false);
-  assert.equal(outputProperties && "patch" in outputProperties, false);
+  assert.ok(outputProperties && typeof outputProperties === "object" && "workspaceId" in outputProperties);
+  assert.ok(outputProperties && typeof outputProperties === "object" && "reviewRef" in outputProperties);
+  assert.equal(outputProperties && typeof outputProperties === "object" && "summary" in outputProperties, false);
+  assert.equal(outputProperties && typeof outputProperties === "object" && "files" in outputProperties, false);
+  assert.equal(outputProperties && typeof outputProperties === "object" && "patch" in outputProperties, false);
   const inputProperties = tools.tools.find((tool) => tool.name === "show_changes")
     ?.inputSchema?.properties;
   assert.equal(inputProperties && "reviewRef" in inputProperties, false);
@@ -817,6 +817,61 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
   assert.equal(legacy.headers.get("mcp-session-id"), null);
 });
 
+test("resource-server token failures use OAuth bearer semantics", async (t) => {
+  const context = await httpServerFixture(t, "devspace-oauth-bearer-errors-");
+
+  const invalidToken = await postModernMcp(
+    context.localBaseUrl,
+    "not-a-valid-devspace-token",
+    "tools/list",
+    {},
+  );
+  assert.equal(invalidToken.status, 401, await invalidToken.clone().text());
+  const invalidTokenBody = await invalidToken.json() as { error?: string };
+  assert.equal(invalidTokenBody.error, "invalid_token");
+  assert.match(
+    invalidToken.headers.get("www-authenticate") ?? "",
+    /Bearer .*invalid_token/,
+  );
+
+  const resourceMismatchToken = "resource-mismatch-token";
+  const tokenStore = new SqliteOAuthStore(join(context.root, ".state"), {
+    issuer: new URL(context.publicBaseUrl).href,
+  });
+  const resourceMismatchClient = new SqliteOAuthClientsStore(
+    tokenStore,
+    [],
+  ).registerClient({ redirect_uris: ["http://127.0.0.1/callback"] });
+  tokenStore.saveAccessToken(
+    hashTokenForTest(resourceMismatchToken),
+    {
+      clientId: resourceMismatchClient.client_id,
+      scopes: ["devspace"],
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      resource: new URL("/different-resource", context.publicBaseUrl).href,
+    },
+  );
+  tokenStore.close();
+
+  const resourceMismatch = await postModernMcp(
+    context.localBaseUrl,
+    resourceMismatchToken,
+    "tools/list",
+    {},
+  );
+  assert.equal(resourceMismatch.status, 401, await resourceMismatch.clone().text());
+  const resourceMismatchBody = await resourceMismatch.json() as {
+    error?: string;
+    error_description?: string;
+  };
+  assert.equal(resourceMismatchBody.error, "invalid_token");
+  assert.match(resourceMismatchBody.error_description ?? "", /resource/);
+  assert.match(
+    resourceMismatch.headers.get("www-authenticate") ?? "",
+    /resource_metadata=/,
+  );
+});
+
 test("OAuth supports Client ID Metadata Documents with exact redirect matching", async (t) => {
   const clientId = "https://client.example.com/oauth/client.json";
   const redirectUri = "http://127.0.0.1:4317/callback";
@@ -1253,12 +1308,12 @@ async function fixture(
   );
   const store = new SqliteWorkspaceStore(stateDir);
   const workspaces = new WorkspaceRegistry(config, store);
-  const server = new McpServer(
+  const serverAdapter = createModernMcpServerAdapter(
     { name: "devspace-test", version: "1.0.0" },
     { instructions: mcpServerInstructions(config) },
   );
   registerMcpSurface(
-    server,
+    serverAdapter.registrationTarget,
     config,
     workspaces,
     createReviewCheckpointManager(),
@@ -1269,10 +1324,12 @@ async function fixture(
     options.trackToolActivity,
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "devspace-test-client", version: "1.0.0" });
+  const client = new Client(
+    { name: "devspace-test-client", version: "1.0.0" },
+  );
   await Promise.all([
     client.connect(clientTransport),
-    server.connect(serverTransport),
+    serverAdapter.server.connect(serverTransport),
   ]);
 
   let closed = false;
@@ -1280,7 +1337,7 @@ async function fixture(
     if (closed) return;
     closed = true;
     await client.close();
-    await server.close();
+    await serverAdapter.server.close();
     store.close();
   };
 
@@ -1326,4 +1383,8 @@ function responseCard(result: Awaited<ReturnType<Client["callTool"]>>): Record<s
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hashTokenForTest(token: string): string {
+  return createHash("sha256").update(token).digest("base64url");
 }

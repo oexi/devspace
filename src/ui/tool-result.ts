@@ -1,4 +1,4 @@
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import type { ReviewFileType, ToolResultCard } from "./card-types.js";
 
 export type DecodedToolResult =
