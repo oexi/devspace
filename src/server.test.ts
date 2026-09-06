@@ -27,6 +27,7 @@ import {
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
+import { chatGptClientMetadata, mockClientMetadataEndpoint } from "./test-support/oauth-client-metadata.test.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -862,6 +863,48 @@ test("OAuth supports Client ID Metadata Documents with exact redirect matching",
 
   const listed = await postModernMcp(localBaseUrl, accessToken, "tools/list", {});
   assert.equal(listed.status, 200, await listed.clone().text());
+});
+
+test("ChatGPT pairing uses the production metadata resolver through authorization and token exchange", async (t) => {
+  mockClientMetadataEndpoint(t);
+  const context = await httpServerFixture(t, "devspace-chatgpt-pairing-test-");
+  const authorization = new URL("/authorize", context.localBaseUrl);
+  authorization.search = new URLSearchParams({
+    client_id: chatGptClientMetadata.client_id,
+    redirect_uri: chatGptClientMetadata.redirect_uris[0]!,
+    response_type: "code",
+    code_challenge: createHash("sha256").update("pairing-verifier").digest("base64url"),
+    code_challenge_method: "S256",
+    scope: "devspace",
+    resource: new URL("/mcp", context.publicBaseUrl).href,
+  }).toString();
+  const page = await fetch(authorization, { redirect: "manual" });
+  assert.equal(page.status, 200, await page.clone().text());
+  assert.match(await page.text(), /Owner password/);
+  const token = await issueCimdAccessToken({
+    ...context,
+    clientId: chatGptClientMetadata.client_id,
+    redirectUri: chatGptClientMetadata.redirect_uris[0]!,
+  });
+  const listed = await postModernMcp(context.localBaseUrl, token, "tools/list", {});
+  assert.equal(listed.status, 200, await listed.clone().text());
+});
+
+test("invalid client metadata produces an OAuth error instead of an opaque pairing 500", async (t) => {
+  mockClientMetadataEndpoint(t, { body: {
+    ...chatGptClientMetadata,
+    token_endpoint_auth_methods_supported: ["private_key_jwt"],
+  } });
+  const context = await httpServerFixture(t, "devspace-cimd-error-test-");
+  const page = await fetch(`${context.localBaseUrl}/authorize?${new URLSearchParams({
+    client_id: chatGptClientMetadata.client_id,
+    redirect_uri: chatGptClientMetadata.redirect_uris[0]!,
+  })}`, { redirect: "manual" });
+  assert.equal(page.status, 400, await page.clone().text());
+  assert.equal(page.headers.get("location"), null);
+  const body = await page.json() as { error: string; error_description: string };
+  assert.equal(body.error, "invalid_client");
+  assert.match(body.error_description, /authentication method/);
 });
 
 interface HttpServerFixture {

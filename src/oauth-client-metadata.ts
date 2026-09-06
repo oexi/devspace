@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import type { LookupAddress } from "node:dns";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { InvalidClientError, OAuthError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import ipaddr from "ipaddr.js";
 import * as z from "zod/v4";
 
@@ -14,7 +15,8 @@ const clientMetadataSchema = z.object({
   client_id: z.url(),
   client_name: z.string().trim().min(1),
   redirect_uris: z.array(z.url()).min(1),
-  token_endpoint_auth_method: z.literal("none").optional().default("none"),
+  token_endpoint_auth_method: z.string().min(1).optional(),
+  token_endpoint_auth_methods_supported: z.array(z.string().min(1)).min(1).optional(),
   grant_types: z.array(z.string()).optional().default(["authorization_code", "refresh_token"]),
   response_types: z.array(z.string()).optional().default(["code"]),
   client_uri: z.url().optional(),
@@ -50,22 +52,39 @@ export class HttpsClientMetadataDocumentResolver implements ClientMetadataDocume
     if (cached && cached.expiresAtMs > nowMs) return cached.client;
     if (cached) this.cache.delete(clientId);
 
-    const fetched = await fetchClientMetadataDocument(clientUrl);
+    let fetched: FetchedMetadataDocument;
+    try {
+      fetched = await fetchClientMetadataDocument(clientUrl);
+    } catch (error) {
+      if (error instanceof OAuthError) throw error;
+      // The SDK masks ordinary exceptions as "Internal Server Error". Do not
+      // expose raw network errors, which may contain URLs or local addresses.
+      throw new ServerError("Could not fetch OAuth Client ID Metadata Document; check DevSpace's outbound DNS and HTTPS connectivity and retry");
+    }
     const parsed = clientMetadataSchema.safeParse(fetched.body);
-    if (!parsed.success) throw new Error("Invalid OAuth Client ID Metadata Document");
+    if (!parsed.success) throw new InvalidClientError("Invalid OAuth Client ID Metadata Document");
     if (parsed.data.client_id !== clientId) {
-      throw new Error("OAuth Client ID Metadata Document client_id must match its URL exactly");
+      throw new InvalidClientError("OAuth Client ID Metadata Document client_id must match its URL exactly");
     }
     if (!parsed.data.grant_types.every((grant) => grant === "authorization_code" || grant === "refresh_token")) {
-      throw new Error("OAuth Client ID Metadata Document requests an unsupported grant type");
+      throw new InvalidClientError("OAuth Client ID Metadata Document requests an unsupported grant type");
     }
     if (!parsed.data.response_types.every((responseType) => responseType === "code")) {
-      throw new Error("OAuth Client ID Metadata Document requests an unsupported response type");
+      throw new InvalidClientError("OAuth Client ID Metadata Document requests an unsupported response type");
+    }
+    // CIMD's plural field lists capabilities, not a preference order. DevSpace
+    // supports public CIMD clients with PKCE; never downgrade a client that
+    // only permits authenticated token exchange to "none".
+    const methods = parsed.data.token_endpoint_auth_methods_supported
+      ?? [parsed.data.token_endpoint_auth_method ?? "none"];
+    if (!methods.includes("none")) {
+      throw new InvalidClientError("OAuth Client ID Metadata Document has no supported token endpoint authentication method; DevSpace requires none with PKCE");
     }
 
     const client: OAuthClientInformationFull = {
       ...parsed.data,
       client_id: clientId,
+      token_endpoint_auth_method: "none",
     };
     const ttlMs = metadataCacheTtlMs(fetched.cacheControl);
     if (ttlMs > 0) {
@@ -83,14 +102,17 @@ interface FetchedMetadataDocument {
 function fetchClientMetadataDocument(url: URL): Promise<FetchedMetadataDocument> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let deadline: NodeJS.Timeout | undefined;
     const finishReject = (error: unknown) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       reject(error instanceof Error ? error : new Error(String(error)));
     };
     const finishResolve = (value: FetchedMetadataDocument) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       resolve(value);
     };
 
@@ -102,15 +124,16 @@ function fetchClientMetadataDocument(url: URL): Promise<FetchedMetadataDocument>
       },
       lookup: safePublicLookup,
     }, (response) => {
+      response.once("error", finishReject);
       if (response.statusCode !== 200) {
-        response.resume();
-        finishReject(new Error(`OAuth Client ID Metadata Document returned HTTP ${response.statusCode ?? "unknown"}`));
+        response.destroy();
+        finishReject(new InvalidClientError(`OAuth Client ID Metadata Document returned HTTP ${response.statusCode ?? "unknown"}`));
         return;
       }
       const contentType = String(response.headers["content-type"] ?? "").toLowerCase();
       if (!contentType.includes("application/json") && !contentType.includes("+json")) {
-        response.resume();
-        finishReject(new Error("OAuth Client ID Metadata Document must use a JSON content type"));
+        response.destroy();
+        finishReject(new InvalidClientError("OAuth Client ID Metadata Document must use a JSON content type"));
         return;
       }
 
@@ -120,12 +143,11 @@ function fetchClientMetadataDocument(url: URL): Promise<FetchedMetadataDocument>
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         totalBytes += buffer.byteLength;
         if (totalBytes > MAX_METADATA_BYTES) {
-          response.destroy(new Error("OAuth Client ID Metadata Document exceeds the size limit"));
+          response.destroy(new InvalidClientError("OAuth Client ID Metadata Document exceeds the size limit"));
           return;
         }
         chunks.push(buffer);
       });
-      response.once("error", finishReject);
       response.once("end", () => {
         if (settled) return;
         try {
@@ -135,26 +157,40 @@ function fetchClientMetadataDocument(url: URL): Promise<FetchedMetadataDocument>
             cacheControl: headerValue(response.headers["cache-control"]),
           });
         } catch {
-          finishReject(new Error("OAuth Client ID Metadata Document is not valid JSON"));
+          finishReject(new InvalidClientError("OAuth Client ID Metadata Document is not valid JSON"));
         }
       });
     });
-    request.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      request.destroy(new Error("OAuth Client ID Metadata Document request timed out"));
-    });
+    // A socket inactivity timeout does not bound DNS resolution or a response
+    // that keeps sending small chunks. Bound the whole metadata lookup.
+    deadline = setTimeout(() => {
+      request.destroy(new ServerError("OAuth Client ID Metadata Document request timed out; check DevSpace's outbound DNS and HTTPS connectivity and retry"));
+    }, REQUEST_TIMEOUT_MS);
+    deadline.unref();
     request.once("error", finishReject);
     request.end();
   });
 }
 
-const safePublicLookup: NonNullable<RequestOptions["lookup"]> = (hostname, _options, callback) => {
+const safePublicLookup: NonNullable<RequestOptions["lookup"]> = (hostname, options, callback) => {
   void dnsLookup(hostname, { all: true, verbatim: true })
     .then((addresses) => {
       if (addresses.length === 0) throw new Error("OAuth client metadata host did not resolve");
       if (addresses.some((address) => !isPublicClientMetadataAddress(address.address))) {
-        throw new Error("OAuth Client ID Metadata Document host resolves to a special-use address");
+        throw new InvalidClientError("OAuth Client ID Metadata Document host resolves to a special-use address");
       }
-      const selected = addresses[0] as LookupAddress;
+      const family = options.family === "IPv4" ? 4 : options.family === "IPv6" ? 6 : options.family;
+      const candidates = family === 4 || family === 6
+        ? addresses.filter((address) => address.family === family)
+        : addresses;
+      if (candidates.length === 0) throw new Error("OAuth client metadata host has no address in the requested family");
+      // Node's automatic IPv4/IPv6 selection requests all=true and expects an
+      // array. Returning a string there causes ERR_INVALID_IP_ADDRESS before TLS.
+      if (options.all) {
+        callback(null, candidates);
+        return;
+      }
+      const selected = candidates[0] as LookupAddress;
       callback(null, selected.address, selected.family);
     })
     .catch((error: unknown) => callback(error instanceof Error ? error : new Error(String(error)), "", 4));

@@ -110,6 +110,17 @@ still available for clients that have not moved to CIMD. CIMD documents are
 fetched only over HTTPS, must identify themselves with the exact document URL,
 and are not fetched from special-use or private network addresses.
 
+For CIMD, DevSpace uses public-client token exchange (`none`) with PKCE. It reads
+the document's `token_endpoint_auth_methods_supported` list when present and
+selects `none` only if the client supports it. This includes ChatGPT documents
+that also publish `private_key_jwt` as their legacy singular preference. Clients
+that require `private_key_jwt` exclusively are not supported by this provider.
+
+If the pairing page reports a client metadata error, check the document URL and
+its published authentication methods. Retrieval errors identify DNS/HTTPS or
+timeout failures; check outbound connectivity from the machine running DevSpace.
+Metadata retrieval has a five-second deadline, including DNS resolution.
+
 When upgrading from a build that predates issuer-bound OAuth storage, existing
 clients and access/refresh tokens intentionally do not inherit the new issuer.
 Reconnect or re-authorize the DevSpace app once after deploying the upgrade; new
