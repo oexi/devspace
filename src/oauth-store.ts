@@ -3,10 +3,16 @@ import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/serv
 import { InvalidRequestError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
+import {
+  HttpsClientMetadataDocumentResolver,
+  parseClientMetadataUrl,
+  type ClientMetadataDocumentResolver,
+} from "./oauth-client-metadata.js";
 
 const DEFAULT_TOKEN_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface SqliteOAuthStoreOptions {
+  issuer: string;
   now?: () => number;
   tokenCleanupIntervalMs?: number;
 }
@@ -46,11 +52,13 @@ function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boole
 
 export class SqliteOAuthStore {
   private readonly database: DatabaseHandle;
+  private readonly issuer: string;
   private readonly now: () => number;
   private readonly tokenCleanupIntervalMs: number;
   private lastTokenCleanupAtMs?: number;
 
-  constructor(stateDir: string, options: SqliteOAuthStoreOptions = {}) {
+  constructor(stateDir: string, options: SqliteOAuthStoreOptions) {
+    this.issuer = canonicalIssuer(options.issuer);
     this.now = options.now ?? Date.now;
     this.tokenCleanupIntervalMs = nonNegativeFiniteDuration(
       options.tokenCleanupIntervalMs ?? DEFAULT_TOKEN_CLEANUP_INTERVAL_MS,
@@ -64,8 +72,8 @@ export class SqliteOAuthStore {
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {
     const row = this.database.sqlite
-      .prepare("select client_json from oauth_clients where client_id = ?")
-      .get(clientId) as { client_json: string } | undefined;
+      .prepare("select client_json from oauth_clients where client_id = ? and issuer = ?")
+      .get(clientId, this.issuer) as { client_json: string } | undefined;
 
     return row ? (JSON.parse(row.client_json) as OAuthClientInformationFull) : undefined;
   }
@@ -89,10 +97,24 @@ export class SqliteOAuthStore {
     };
 
     this.database.sqlite
-      .prepare("insert into oauth_clients (client_id, client_json, issued_at) values (?, ?, ?)")
-      .run(registered.client_id, JSON.stringify(registered), now);
+      .prepare("insert into oauth_clients (client_id, client_json, issued_at, issuer) values (?, ?, ?, ?)")
+      .run(registered.client_id, JSON.stringify(registered), now, this.issuer);
 
     return registered;
+  }
+
+  upsertResolvedClient(client: OAuthClientInformationFull): void {
+    const issuedAt = client.client_id_issued_at ?? this.nowSeconds();
+    this.database.sqlite
+      .prepare(
+        `insert into oauth_clients (client_id, client_json, issued_at, issuer)
+         values (?, ?, ?, ?)
+         on conflict(client_id) do update set
+           client_json = excluded.client_json,
+           issued_at = excluded.issued_at,
+           issuer = excluded.issuer`,
+      )
+      .run(client.client_id, JSON.stringify(client), issuedAt, this.issuer);
   }
 
   saveAccessToken(tokenHash: string, record: PersistedAccessTokenRecord): void {
@@ -103,13 +125,14 @@ export class SqliteOAuthStore {
   private saveAccessTokenRecord(tokenHash: string, record: PersistedAccessTokenRecord): void {
     this.database.sqlite
       .prepare(
-        `insert into oauth_access_tokens (token_hash, client_id, scopes_json, expires_at, resource)
-         values (?, ?, ?, ?, ?)
+        `insert into oauth_access_tokens (token_hash, client_id, scopes_json, expires_at, resource, issuer)
+         values (?, ?, ?, ?, ?, ?)
          on conflict(token_hash) do update set
            client_id = excluded.client_id,
            scopes_json = excluded.scopes_json,
            expires_at = excluded.expires_at,
-           resource = excluded.resource`,
+           resource = excluded.resource,
+           issuer = excluded.issuer`,
       )
       .run(
         tokenHash,
@@ -117,6 +140,7 @@ export class SqliteOAuthStore {
         JSON.stringify(record.scopes),
         record.expiresAt,
         record.resource ?? null,
+        this.issuer,
       );
   }
 
@@ -124,9 +148,9 @@ export class SqliteOAuthStore {
     this.maybeDeleteExpiredTokens();
     const row = this.database.sqlite
       .prepare(
-        "select client_id, scopes_json, expires_at, resource from oauth_access_tokens where token_hash = ?",
+        "select client_id, scopes_json, expires_at, resource from oauth_access_tokens where token_hash = ? and issuer = ?",
       )
-      .get(tokenHash) as
+      .get(tokenHash, this.issuer) as
       | {
           client_id: string;
           scopes_json: string;
@@ -151,13 +175,14 @@ export class SqliteOAuthStore {
   private saveRefreshTokenRecord(tokenHash: string, record: PersistedRefreshTokenRecord): void {
     this.database.sqlite
       .prepare(
-        `insert into oauth_refresh_tokens (token_hash, client_id, scopes_json, expires_at, resource)
-         values (?, ?, ?, ?, ?)
+        `insert into oauth_refresh_tokens (token_hash, client_id, scopes_json, expires_at, resource, issuer)
+         values (?, ?, ?, ?, ?, ?)
          on conflict(token_hash) do update set
            client_id = excluded.client_id,
            scopes_json = excluded.scopes_json,
            expires_at = excluded.expires_at,
-           resource = excluded.resource`,
+           resource = excluded.resource,
+           issuer = excluded.issuer`,
       )
       .run(
         tokenHash,
@@ -165,6 +190,7 @@ export class SqliteOAuthStore {
         JSON.stringify(record.scopes),
         record.expiresAt,
         record.resource ?? null,
+        this.issuer,
       );
   }
 
@@ -173,8 +199,8 @@ export class SqliteOAuthStore {
     const save = this.database.sqlite.transaction(() => {
       if (consumedRefreshTokenHash) {
         const result = this.database.sqlite
-          .prepare("delete from oauth_refresh_tokens where token_hash = ?")
-          .run(consumedRefreshTokenHash);
+          .prepare("delete from oauth_refresh_tokens where token_hash = ? and issuer = ?")
+          .run(consumedRefreshTokenHash, this.issuer);
         if (result.changes !== 1) return false;
       }
 
@@ -190,9 +216,9 @@ export class SqliteOAuthStore {
     this.maybeDeleteExpiredTokens();
     const row = this.database.sqlite
       .prepare(
-        "select client_id, scopes_json, expires_at, resource from oauth_refresh_tokens where token_hash = ?",
+        "select client_id, scopes_json, expires_at, resource from oauth_refresh_tokens where token_hash = ? and issuer = ?",
       )
-      .get(tokenHash) as
+      .get(tokenHash, this.issuer) as
       | {
           client_id: string;
           scopes_json: string;
@@ -242,10 +268,14 @@ export class SqliteOAuthClientsStore implements OAuthRegisteredClientsStore {
   constructor(
     private readonly store: SqliteOAuthStore,
     private readonly allowedRedirectHosts: string[],
+    private readonly clientMetadataResolver: ClientMetadataDocumentResolver = new HttpsClientMetadataDocumentResolver(),
   ) {}
 
-  getClient(clientId: string): OAuthClientInformationFull | undefined {
-    return this.store.getClient(clientId);
+  async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
+    if (!parseClientMetadataUrl(clientId)) return this.store.getClient(clientId);
+    const resolved = await this.clientMetadataResolver.resolve(clientId);
+    if (resolved) this.store.upsertResolvedClient(resolved);
+    return resolved;
   }
 
   registerClient(
@@ -288,4 +318,10 @@ function nonNegativeFiniteDuration(value: number, name: string): number {
     throw new Error(`${name} must be a non-negative finite duration.`);
   }
   return value;
+}
+
+function canonicalIssuer(value: string): string {
+  const issuer = new URL(value);
+  if (issuer.search || issuer.hash) throw new Error("OAuth issuer must not contain a query or fragment");
+  return issuer.href;
 }

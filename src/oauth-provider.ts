@@ -2,7 +2,7 @@ import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypt
 import type { Response } from "express";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import { AccessDeniedError, InvalidGrantError, InvalidRequestError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { AccessDeniedError, InvalidGrantError, InvalidRequestError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type {
   OAuthClientInformationFull,
@@ -11,9 +11,16 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
   checkResourceAllowed,
+  OAuthError,
+  OAuthErrorCode,
   resourceUrlFromServerUrl,
 } from "@modelcontextprotocol/server";
 import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
+import {
+  HttpsClientMetadataDocumentResolver,
+  parseClientMetadataUrl,
+  type ClientMetadataDocumentResolver,
+} from "./oauth-client-metadata.js";
 
 export interface OAuthConfig {
   ownerToken: string;
@@ -37,6 +44,8 @@ export interface SingleUserOAuthProviderOptions {
   now?: () => number;
   authorizationCodeCleanupIntervalMs?: number;
   tokenCleanupIntervalMs?: number;
+  issuerUrl?: URL;
+  clientMetadataResolver?: ClientMetadataDocumentResolver;
 }
 
 function randomToken(): string {
@@ -127,6 +136,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   private readonly codes = new Map<string, AuthorizationCodeRecord>();
   private readonly oauthStore: SqliteOAuthStore;
   private readonly resourceServerUrl: URL;
+  private readonly issuerUrl: URL;
   private readonly now: () => number;
   private readonly authorizationCodeCleanupIntervalMs: number;
   private lastAuthorizationCodeCleanupAtMs?: number;
@@ -144,11 +154,17 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       "OAuth authorization code cleanup interval",
     );
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
+    this.issuerUrl = new URL(options.issuerUrl?.href ?? resourceServerUrl.origin);
     this.oauthStore = new SqliteOAuthStore(stateDir, {
+      issuer: this.issuerUrl.href,
       now: this.now,
       tokenCleanupIntervalMs: options.tokenCleanupIntervalMs,
     });
-    this.clientsStore = new SqliteOAuthClientsStore(this.oauthStore, config.allowedRedirectHosts);
+    this.clientsStore = new SqliteOAuthClientsStore(
+      this.oauthStore,
+      config.allowedRedirectHosts,
+      options.clientMetadataResolver ?? new HttpsClientMetadataDocumentResolver(this.now),
+    );
   }
 
   async authorize(
@@ -163,6 +179,16 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     }
     if (!requestedScopesAllowed(params.scopes ?? [], this.config.scopes)) {
       throw new InvalidRequestError("Requested scope is not supported");
+    }
+    if (
+      parseClientMetadataUrl(client.client_id) &&
+      !client.redirect_uris.includes(params.redirectUri)
+    ) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "Client ID Metadata Document redirect_uri must match exactly",
+      });
+      return;
     }
 
     if (res.req.method !== "POST") {
@@ -203,6 +229,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
 
     const redirectUrl = new URL(params.redirectUri);
     redirectUrl.searchParams.set("code", code);
+    redirectUrl.searchParams.set("iss", this.issuerUrl.href);
     if (params.state !== undefined) redirectUrl.searchParams.set("state", params.state);
     res.redirect(302, redirectUrl.href);
   }
@@ -269,7 +296,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     this.maybeCleanupExpiredAuthorizationCodes(nowMs);
     const record = this.oauthStore.getAccessToken(hashToken(token));
     if (!record || record.expiresAt <= this.nowSeconds()) {
-      throw new InvalidTokenError("Invalid or expired access token");
+      throw new OAuthError(OAuthErrorCode.InvalidToken, "Invalid or expired access token");
     }
 
     return {

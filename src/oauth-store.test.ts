@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { databasePath, openDatabase } from "./db/client.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
@@ -17,6 +18,7 @@ const oauthConfig = {
   allowedRedirectHosts: ["chatgpt.com"],
 };
 const mcpUrl = new URL("https://agent.example.com/mcp");
+const issuer = mcpUrl.origin;
 const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
 
 try {
@@ -28,6 +30,8 @@ try {
   await testAuthorizationCodeCleanup(join(root, "authorization-code-cleanup"));
   await testTokenExpirationBoundary(join(root, "expiration-boundary"));
   await testProviderRestartRotationAndRevocation(join(root, "provider"));
+  await testIssuerBinding(join(root, "issuer-binding"));
+  await testUnboundCredentialsAreRejected(join(root, "unbound-credentials"));
 } finally {
   await rm(root, { recursive: true, force: true });
 }
@@ -50,6 +54,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
       { version: 4, name: "workspace-conversation-bindings" },
       { version: 5, name: "local-agent-structured-errors" },
       { version: 6, name: "local-agent-effort-rename" },
+      { version: 7, name: "oauth-issuer-binding" },
     ]);
   } finally {
     database.close();
@@ -64,7 +69,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
 function testPersistenceAndTokenHashing(stateDir: string): void {
   const accessToken = "access-token-example";
   const refreshToken = "refresh-token-example";
-  const firstStore = new SqliteOAuthStore(stateDir);
+  const firstStore = new SqliteOAuthStore(stateDir, { issuer });
   const firstClients = new SqliteOAuthClientsStore(firstStore, oauthConfig.allowedRedirectHosts);
   const client = firstClients.registerClient({
     redirect_uris: [redirectUri],
@@ -107,7 +112,7 @@ function testPersistenceAndTokenHashing(stateDir: string): void {
     database.close();
   }
 
-  const restoredStore = new SqliteOAuthStore(stateDir);
+  const restoredStore = new SqliteOAuthStore(stateDir, { issuer });
   try {
     const restoredClient = restoredStore.getClient(client.client_id);
     assert.equal(restoredClient?.client_id, client.client_id);
@@ -119,7 +124,7 @@ function testPersistenceAndTokenHashing(stateDir: string): void {
 }
 
 function testExpiredTokenCleanup(stateDir: string): void {
-  const store = new SqliteOAuthStore(stateDir);
+  const store = new SqliteOAuthStore(stateDir, { issuer });
   const client = new SqliteOAuthClientsStore(store, oauthConfig.allowedRedirectHosts).registerClient({
     redirect_uris: [redirectUri],
   });
@@ -132,7 +137,7 @@ function testExpiredTokenCleanup(stateDir: string): void {
   });
   store.close();
 
-  const reopened = new SqliteOAuthStore(stateDir);
+  const reopened = new SqliteOAuthStore(stateDir, { issuer });
   try {
     assert.equal(reopened.getAccessToken("expired-access-hash"), undefined);
     assert.equal(reopened.getRefreshToken("expired-refresh-hash"), undefined);
@@ -144,6 +149,7 @@ function testExpiredTokenCleanup(stateDir: string): void {
 function testTokenCleanupCadence(stateDir: string): void {
   let nowMs = 2_000_000;
   const store = new SqliteOAuthStore(stateDir, {
+    issuer,
     now: () => nowMs,
     tokenCleanupIntervalMs: 1_000,
   });
@@ -269,7 +275,7 @@ async function testTokenExpirationBoundary(stateDir: string): Promise<void> {
     const issuedAtSeconds = Math.floor(nowMs / 1000);
 
     nowMs = (issuedAtSeconds + oauthConfig.accessTokenTtlSeconds) * 1000;
-    await assert.rejects(provider.verifyAccessToken(issued.access_token), InvalidTokenError);
+    await assert.rejects(provider.verifyAccessToken(issued.access_token), isInvalidTokenError);
 
     nowMs = (issuedAtSeconds + oauthConfig.refreshTokenTtlSeconds) * 1000;
     await assert.rejects(
@@ -282,7 +288,7 @@ async function testTokenExpirationBoundary(stateDir: string): Promise<void> {
 }
 
 function testTransactionalTokenRotation(stateDir: string): void {
-  const store = new SqliteOAuthStore(stateDir);
+  const store = new SqliteOAuthStore(stateDir, { issuer });
   try {
     const client = new SqliteOAuthClientsStore(store, oauthConfig.allowedRedirectHosts).registerClient({
       redirect_uris: [redirectUri],
@@ -378,7 +384,7 @@ async function testProviderRestartRotationAndRevocation(stateDir: string): Promi
     );
 
     await secondProvider.revokeToken(client, { token: refreshed.access_token });
-    await assert.rejects(secondProvider.verifyAccessToken(refreshed.access_token), InvalidTokenError);
+    await assert.rejects(secondProvider.verifyAccessToken(refreshed.access_token), isInvalidTokenError);
 
     await secondProvider.revokeToken(client, { token: refreshed.refresh_token });
     await assert.rejects(
@@ -390,6 +396,99 @@ async function testProviderRestartRotationAndRevocation(stateDir: string): Promi
   }
 }
 
+async function testIssuerBinding(stateDir: string): Promise<void> {
+  const issuerA = new URL("https://issuer-a.example.com");
+  const issuerB = new URL("https://issuer-b.example.com");
+  const firstProvider = new SingleUserOAuthProvider(oauthConfig, mcpUrl, stateDir, {
+    issuerUrl: issuerA,
+  });
+  const client = await firstProvider.clientsStore.registerClient?.({ redirect_uris: [redirectUri] });
+  assert.ok(client);
+  firstProvider["codes"].set("issuer-bound-code", {
+    clientId: client.client_id,
+    params: {
+      redirectUri,
+      codeChallenge: "challenge",
+      scopes: ["devspace"],
+      resource: mcpUrl,
+    },
+    expiresAtMs: Date.now() + 60_000,
+  });
+  const issued = await firstProvider.exchangeAuthorizationCode(
+    client,
+    "issuer-bound-code",
+    undefined,
+    redirectUri,
+    mcpUrl,
+  );
+  assert.ok(issued.refresh_token);
+  firstProvider.close();
+
+  const secondProvider = new SingleUserOAuthProvider(oauthConfig, mcpUrl, stateDir, {
+    issuerUrl: issuerB,
+  });
+  try {
+    assert.equal(await secondProvider.clientsStore.getClient(client.client_id), undefined);
+    await assert.rejects(secondProvider.verifyAccessToken(issued.access_token), isInvalidTokenError);
+    await assert.rejects(
+      secondProvider.exchangeRefreshToken(client, issued.refresh_token, ["devspace"], mcpUrl),
+      InvalidGrantError,
+    );
+  } finally {
+    secondProvider.close();
+  }
+}
+
+async function testUnboundCredentialsAreRejected(stateDir: string): Promise<void> {
+  const provider = new SingleUserOAuthProvider(oauthConfig, mcpUrl, stateDir);
+  const client = await provider.clientsStore.registerClient?.({ redirect_uris: [redirectUri] });
+  assert.ok(client);
+  provider["codes"].set("unbound-code", {
+    clientId: client.client_id,
+    params: {
+      redirectUri,
+      codeChallenge: "challenge",
+      scopes: ["devspace"],
+      resource: mcpUrl,
+    },
+    expiresAtMs: Date.now() + 60_000,
+  });
+  const issued = await provider.exchangeAuthorizationCode(
+    client,
+    "unbound-code",
+    undefined,
+    redirectUri,
+    mcpUrl,
+  );
+  assert.ok(issued.refresh_token);
+  provider.close();
+
+  const database = openDatabase(stateDir);
+  try {
+    database.sqlite.prepare("update oauth_clients set issuer = null").run();
+    database.sqlite.prepare("update oauth_access_tokens set issuer = null").run();
+    database.sqlite.prepare("update oauth_refresh_tokens set issuer = null").run();
+  } finally {
+    database.close();
+  }
+
+  const reopened = new SingleUserOAuthProvider(oauthConfig, mcpUrl, stateDir);
+  try {
+    assert.equal(await reopened.clientsStore.getClient(client.client_id), undefined);
+    await assert.rejects(reopened.verifyAccessToken(issued.access_token), isInvalidTokenError);
+    await assert.rejects(
+      reopened.exchangeRefreshToken(client, issued.refresh_token, ["devspace"], mcpUrl),
+      InvalidGrantError,
+    );
+  } finally {
+    reopened.close();
+  }
+}
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("base64url");
+}
+
+function isInvalidTokenError(error: unknown): boolean {
+  return OAuthError.isInstance(error) && error.code === OAuthErrorCode.InvalidToken;
 }

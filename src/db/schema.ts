@@ -61,6 +61,7 @@ export const oauthClients = sqliteTable(
     clientId: text("client_id").primaryKey(),
     clientJson: text("client_json").notNull(),
     issuedAt: integer("issued_at").notNull(),
+    issuer: text("issuer"),
   },
 );
 
@@ -74,6 +75,7 @@ export const oauthAccessTokens = sqliteTable(
     scopesJson: text("scopes_json").notNull(),
     expiresAt: integer("expires_at").notNull(),
     resource: text("resource"),
+    issuer: text("issuer"),
   },
 );
 
@@ -87,6 +89,7 @@ export const oauthRefreshTokens = sqliteTable(
     scopesJson: text("scopes_json").notNull(),
     expiresAt: integer("expires_at").notNull(),
     resource: text("resource"),
+    issuer: text("issuer"),
   },
 );
 

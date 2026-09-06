@@ -20,7 +20,7 @@
 
 DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and run code in your real local projects — your files, your tools, your terminal — without uploading anything to a third party. You run it on your machine, expose it through a tunnel you control, and approve the connection with a password only you have.
 
-The `/mcp` endpoint serves MCP 2026-07-28 using the modern per-request protocol. Older 2025-era MCP protocol requests are not supported.
+The `/mcp` endpoint serves MCP 2026-07-28 using the modern per-request protocol. Older 2025-era MCP protocol requests are not supported. OAuth authorization is issuer-bound, includes RFC 9207 `iss` in authorization responses, and supports HTTPS Client ID Metadata Documents (CIMD); dynamic client registration remains available as a compatibility fallback.
 
 ## Sponsors and Special Thanks
 <!-- 

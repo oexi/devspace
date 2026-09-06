@@ -4,14 +4,17 @@ import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
-import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import {
+  buildOAuthProtectedResourceMetadata,
   checkResourceAllowed,
   createMcpHandler,
   getOAuthProtectedResourceMetadataUrl,
+  oauthMetadataResponse,
+  requireBearerAuth,
   resourceUrlFromServerUrl,
+  type OAuthMetadata,
 } from "@modelcontextprotocol/server";
-import { toNodeHandler } from "@modelcontextprotocol/node";
+import { toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
 import {
   registerAppResource,
   registerAppTool,
@@ -36,6 +39,7 @@ import {
 } from "./logger.js";
 import { readFileTool } from "./pi-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
+import type { ClientMetadataDocumentResolver } from "./oauth-client-metadata.js";
 import {
   compileMcpRegistrationSurface,
   createModernMcpServerAdapter,
@@ -104,6 +108,28 @@ function mcpServerInfo() {
     version: DEVSPACE_VERSION,
     description:
       "Coding tools for project workspaces. Open each project or worktree once, then reuse its workspaceId.",
+  };
+}
+
+function oauthServerMetadata(
+  issuerUrl: URL,
+  baseUrl: URL,
+  scopes: string[],
+): OAuthMetadata & { authorization_response_iss_parameter_supported: true } {
+  return {
+    issuer: issuerUrl.href,
+    authorization_endpoint: new URL("/authorize", baseUrl).href,
+    token_endpoint: new URL("/token", baseUrl).href,
+    registration_endpoint: new URL("/register", baseUrl).href,
+    revocation_endpoint: new URL("/revoke", baseUrl).href,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+    revocation_endpoint_auth_methods_supported: ["client_secret_post"],
+    scopes_supported: scopes,
+    client_id_metadata_document_supported: true,
+    authorization_response_iss_parameter_supported: true,
   };
 }
 
@@ -782,6 +808,7 @@ function withTrackedToolHandlers(
 
 export interface CreateServerOptions {
   incomingArtifactAdapters?: readonly IncomingArtifactAdapter[];
+  clientMetadataResolver?: ClientMetadataDocumentResolver;
 }
 
 export function createServer(
@@ -799,7 +826,19 @@ export function createServer(
   });
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
-  const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
+  const issuerUrl = new URL(config.publicBaseUrl);
+  const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir, {
+    issuerUrl,
+    clientMetadataResolver: options.clientMetadataResolver,
+  });
+  const oauthMetadata = oauthServerMetadata(issuerUrl, issuerUrl, config.oauth.scopes);
+  const oauthMetadataOptions = {
+    oauthMetadata,
+    resourceServerUrl,
+    scopesSupported: config.oauth.scopes,
+    resourceName: "DevSpace",
+  };
+  buildOAuthProtectedResourceMetadata(oauthMetadataOptions);
   const bearerAuth = requireBearerAuth({
     verifier: oauthProvider,
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
@@ -932,6 +971,30 @@ export function createServer(
     next();
   });
 
+  app.use(async (req, res, next) => {
+    const path = requestPath(req);
+    if (
+      path !== "/.well-known/oauth-authorization-server" &&
+      !path.startsWith("/.well-known/oauth-protected-resource")
+    ) {
+      next();
+      return;
+    }
+    try {
+      const response = oauthMetadataResponse(
+        await toWebRequest(req, req.body),
+        oauthMetadataOptions,
+      );
+      if (!response) {
+        next();
+        return;
+      }
+      await sendWebResponse(res, response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
@@ -965,15 +1028,15 @@ export function createServer(
   app.all("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
 
-    await new Promise<void>((resolve, reject) => {
-      bearerAuth(req, res, (error?: unknown) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
-    if (res.headersSent) return;
+    const auth = await bearerAuth(await toWebRequest(req, req.body));
+    if (auth instanceof globalThis.Response) {
+      await sendWebResponse(res, auth);
+      return;
+    }
+    const authenticatedRequest = req as Request & { auth?: typeof auth };
+    authenticatedRequest.auth = auth;
 
-    if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
+    if (!authenticatedRequest.auth?.resource || !checkResourceAllowed({ requestedResource: authenticatedRequest.auth.resource, configuredResource: resourceServerUrl })) {
       logEvent(config.logging, "warn", "auth_denied", {
         requestId,
         method: req.method,
@@ -1027,6 +1090,13 @@ export function createServer(
       return closePromise;
     },
   };
+}
+
+async function sendWebResponse(res: Response, response: globalThis.Response): Promise<void> {
+  res.status(response.status);
+  response.headers.forEach((value, name) => res.setHeader(name, value));
+  const body = Buffer.from(await response.arrayBuffer());
+  res.send(body);
 }
 
 async function isMainModule(): Promise<boolean> {

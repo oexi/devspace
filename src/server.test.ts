@@ -16,6 +16,7 @@ import { buildLocalAgentProviderStatuses } from "./local-agent-catalog.js";
 import type { SubagentsConfig } from "./local-agent-config.js";
 import type { LocalTaskAgentClient } from "./local-task-tools.js";
 import type { LocalAgentRecord } from "./local-agent-store.js";
+import type { ClientMetadataDocumentResolver } from "./oauth-client-metadata.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
 import {
@@ -668,10 +669,26 @@ test("open_workspace scopes checkout reuse to OpenAI session metadata", async (t
 });
 
 test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests", async (t) => {
-  const { root, localBaseUrl, accessToken } = await httpServerFixture(
+  const { root, localBaseUrl, accessToken, publicBaseUrl } = await httpServerFixture(
     t,
     "devspace-modern-http-test-",
   );
+
+  const authorizationMetadata = await fetch(`${localBaseUrl}/.well-known/oauth-authorization-server`);
+  assert.equal(authorizationMetadata.status, 200, await authorizationMetadata.clone().text());
+  const authorizationMetadataBody = await authorizationMetadata.json() as Record<string, unknown>;
+  assert.equal(authorizationMetadataBody.issuer, `${publicBaseUrl}/`);
+  assert.equal(authorizationMetadataBody.client_id_metadata_document_supported, true);
+  assert.equal(authorizationMetadataBody.authorization_response_iss_parameter_supported, true);
+  assert.equal(authorizationMetadataBody.registration_endpoint, `${publicBaseUrl}/register`);
+
+  const protectedResourceMetadata = await fetch(
+    `${localBaseUrl}/.well-known/oauth-protected-resource/mcp`,
+  );
+  assert.equal(protectedResourceMetadata.status, 200, await protectedResourceMetadata.clone().text());
+  const protectedResourceBody = await protectedResourceMetadata.json() as Record<string, unknown>;
+  assert.equal(protectedResourceBody.resource, `${publicBaseUrl}/mcp`);
+  assert.deepEqual(protectedResourceBody.authorization_servers, [`${publicBaseUrl}/`]);
 
   const unauthenticated = await postModernMcp(
     localBaseUrl,
@@ -680,6 +697,31 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
     {},
   );
   assert.equal(unauthenticated.status, 401, await unauthenticated.clone().text());
+  assert.match(
+    unauthenticated.headers.get("www-authenticate") ?? "",
+    /resource_metadata="https:\/\/example\.test\/\.well-known\/oauth-protected-resource\/mcp"/,
+  );
+
+  const insufficientScopeToken = await issueTestAccessToken(
+    localBaseUrl,
+    publicBaseUrl,
+    "test-owner-token-that-is-long-enough",
+    "other",
+  );
+  const insufficientScope = await postModernMcp(
+    localBaseUrl,
+    insufficientScopeToken,
+    "tools/list",
+    {},
+  );
+  assert.equal(insufficientScope.status, 403, await insufficientScope.clone().text());
+  const insufficientScopeChallenge = insufficientScope.headers.get("www-authenticate") ?? "";
+  assert.match(insufficientScopeChallenge, /insufficient_scope/);
+  assert.match(insufficientScopeChallenge, /scope="devspace"/);
+  assert.match(
+    insufficientScopeChallenge,
+    /resource_metadata="https:\/\/example\.test\/\.well-known\/oauth-protected-resource\/mcp"/,
+  );
 
   const discovery = await postModernMcp(
     localBaseUrl,
@@ -774,15 +816,70 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
   assert.equal(legacy.headers.get("mcp-session-id"), null);
 });
 
+test("OAuth supports Client ID Metadata Documents with exact redirect matching", async (t) => {
+  const clientId = "https://client.example.com/oauth/client.json";
+  const redirectUri = "http://127.0.0.1:4317/callback";
+  let resolveCount = 0;
+  const clientMetadataResolver: ClientMetadataDocumentResolver = {
+    async resolve(requestedClientId) {
+      resolveCount += 1;
+      assert.equal(requestedClientId, clientId);
+      return {
+        client_id: clientId,
+        client_name: "DevSpace CIMD test client",
+        redirect_uris: [redirectUri],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      };
+    },
+  };
+  const { localBaseUrl, publicBaseUrl, ownerToken } = await httpServerFixture(
+    t,
+    "devspace-cimd-http-test-",
+    { clientMetadataResolver },
+  );
+
+  const mismatchedRedirect = await authorizeTestClient({
+    localBaseUrl,
+    publicBaseUrl,
+    ownerToken,
+    clientId,
+    redirectUri: "http://127.0.0.1:9999/callback",
+    verifier: "cimd-verifier-mismatch-0123456789",
+  });
+  assert.equal(mismatchedRedirect.status, 400, await mismatchedRedirect.clone().text());
+  assert.equal(mismatchedRedirect.headers.get("location"), null);
+
+  const accessToken = await issueCimdAccessToken({
+    localBaseUrl,
+    publicBaseUrl,
+    ownerToken,
+    clientId,
+    redirectUri,
+  });
+  assert.ok(resolveCount >= 2);
+
+  const listed = await postModernMcp(localBaseUrl, accessToken, "tools/list", {});
+  assert.equal(listed.status, 200, await listed.clone().text());
+});
+
 interface HttpServerFixture {
   root: string;
   localBaseUrl: string;
   accessToken: string;
+  publicBaseUrl: string;
+  ownerToken: string;
+}
+
+interface HttpServerFixtureOptions {
+  clientMetadataResolver?: ClientMetadataDocumentResolver;
 }
 
 async function httpServerFixture(
   t: TestContext,
   prefix: string,
+  options: HttpServerFixtureOptions = {},
 ): Promise<HttpServerFixture> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const ownerToken = "test-owner-token-that-is-long-enough";
@@ -796,8 +893,12 @@ async function httpServerFixture(
       worktreeRoot: join(root, ".worktrees"),
     },
     storage: { stateDir: join(root, ".state") },
+    oauth: { scopes: ["devspace", "other"] },
   }));
-  const running = createServer(config, { incomingArtifactAdapters: [] });
+  const running = createServer(config, {
+    incomingArtifactAdapters: [],
+    clientMetadataResolver: options.clientMetadataResolver,
+  });
   const httpServer = running.app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => httpServer.once("listening", resolve));
 
@@ -817,13 +918,20 @@ async function httpServerFixture(
     config.publicBaseUrl,
     ownerToken,
   );
-  return { root, localBaseUrl, accessToken };
+  return {
+    root,
+    localBaseUrl,
+    accessToken,
+    publicBaseUrl: config.publicBaseUrl,
+    ownerToken,
+  };
 }
 
 async function issueTestAccessToken(
   localBaseUrl: string,
   publicBaseUrl: string,
   ownerToken: string,
+  scope: string | undefined = "devspace",
 ): Promise<string> {
   const redirectUri = "http://127.0.0.1/callback";
   const resource = new URL("/mcp", publicBaseUrl).href;
@@ -834,6 +942,7 @@ async function issueTestAccessToken(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       client_name: "DevSpace modern protocol test",
+      application_type: "native",
       redirect_uris: [redirectUri],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
@@ -844,26 +953,29 @@ async function issueTestAccessToken(
   const client = await registration.json() as { client_id?: string };
   assert.ok(client.client_id);
 
+  const authorizationParams = new URLSearchParams({
+    client_id: client.client_id,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource,
+    state: "modern-test",
+    owner_token: ownerToken,
+  });
+  if (scope !== undefined) authorizationParams.set("scope", scope);
   const approval = await fetch(`${localBaseUrl}/authorize`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: client.client_id,
-      redirect_uri: redirectUri,
-      response_type: "code",
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-      scope: "devspace",
-      resource,
-      state: "modern-test",
-      owner_token: ownerToken,
-    }),
+    body: authorizationParams,
     redirect: "manual",
   });
   assert.equal(approval.status, 302, await approval.clone().text());
   const location = approval.headers.get("location");
   assert.ok(location);
-  const code = new URL(location).searchParams.get("code");
+  const approvalUrl = new URL(location);
+  assert.equal(approvalUrl.searchParams.get("iss"), `${publicBaseUrl}/`);
+  const code = approvalUrl.searchParams.get("code");
   assert.ok(code);
 
   const exchange = await fetch(`${localBaseUrl}/token`, {
@@ -882,6 +994,68 @@ async function issueTestAccessToken(
   const tokens = await exchange.json() as { access_token?: string };
   assert.ok(tokens.access_token);
   return tokens.access_token;
+}
+
+async function issueCimdAccessToken(input: {
+  localBaseUrl: string;
+  publicBaseUrl: string;
+  ownerToken: string;
+  clientId: string;
+  redirectUri: string;
+}): Promise<string> {
+  const verifier = "devspace-cimd-verifier-0123456789";
+  const approval = await authorizeTestClient({ ...input, verifier });
+  assert.equal(approval.status, 302, await approval.clone().text());
+  const location = approval.headers.get("location");
+  assert.ok(location);
+  const approvalUrl = new URL(location);
+  assert.equal(approvalUrl.searchParams.get("iss"), `${input.publicBaseUrl}/`);
+  const code = approvalUrl.searchParams.get("code");
+  assert.ok(code);
+
+  const exchange = await fetch(`${input.localBaseUrl}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: input.clientId,
+      code,
+      code_verifier: verifier,
+      redirect_uri: input.redirectUri,
+      resource: new URL("/mcp", input.publicBaseUrl).href,
+    }),
+  });
+  assert.equal(exchange.status, 200, await exchange.clone().text());
+  const tokens = await exchange.json() as { access_token?: string };
+  assert.ok(tokens.access_token);
+  return tokens.access_token;
+}
+
+function authorizeTestClient(input: {
+  localBaseUrl: string;
+  publicBaseUrl: string;
+  ownerToken: string;
+  clientId: string;
+  redirectUri: string;
+  verifier: string;
+}): Promise<Response> {
+  const challenge = createHash("sha256").update(input.verifier).digest("base64url");
+  return fetch(`${input.localBaseUrl}/authorize`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: input.clientId,
+      redirect_uri: input.redirectUri,
+      response_type: "code",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      scope: "devspace",
+      resource: new URL("/mcp", input.publicBaseUrl).href,
+      state: "cimd-test",
+      owner_token: input.ownerToken,
+    }),
+    redirect: "manual",
+  });
 }
 
 function postModernMcp(

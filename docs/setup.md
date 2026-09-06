@@ -103,6 +103,18 @@ DevSpace serves MCP 2026-07-28 through the modern per-request handler. Older
 2025-era MCP protocol requests are not supported, so clients must support the
 current protocol.
 
+OAuth credentials are bound to the configured public issuer. DevSpace advertises
+Client ID Metadata Document (CIMD) support and includes the RFC 9207 `iss`
+parameter in successful authorization redirects. Dynamic client registration is
+still available for clients that have not moved to CIMD. CIMD documents are
+fetched only over HTTPS, must identify themselves with the exact document URL,
+and are not fetched from special-use or private network addresses.
+
+When upgrading from a build that predates issuer-bound OAuth storage, existing
+clients and access/refresh tokens intentionally do not inherit the new issuer.
+Reconnect or re-authorize the DevSpace app once after deploying the upgrade; new
+credentials are then persisted with the issuer and survive normal restarts.
+
 A Coding Agents-only setup skips this section.
 
 ## Start The Server

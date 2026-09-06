@@ -37,6 +37,11 @@ const migrations: Migration[] = [
     name: "local-agent-effort-rename",
     up: migrateLocalAgentEffortRename,
   },
+  {
+    version: 7,
+    name: "oauth-issuer-binding",
+    up: migrateOAuthIssuerBinding,
+  },
 ];
 
 export function migrateDatabase(sqlite: Database.Database): void {
@@ -189,6 +194,24 @@ function migrateLocalAgentSessions(sqlite: Database.Database): void {
   addColumnIfMissing(sqlite, "local_agent_sessions", "effort", "text");
 }
 
+function migrateOAuthIssuerBinding(sqlite: Database.Database): void {
+  // Historical/interrupted databases may record migration 2 without retaining
+  // the OAuth tables. Re-establish the idempotent base schema before altering
+  // it so this hardening migration remains safe on those databases as well.
+  migrateOAuthState(sqlite);
+  addColumnIfMissing(sqlite, "oauth_clients", "issuer", "text");
+  addColumnIfMissing(sqlite, "oauth_access_tokens", "issuer", "text");
+  addColumnIfMissing(sqlite, "oauth_refresh_tokens", "issuer", "text");
+  sqlite.exec(`
+    create index if not exists oauth_clients_issuer_idx
+      on oauth_clients(issuer);
+    create index if not exists oauth_access_tokens_issuer_idx
+      on oauth_access_tokens(issuer);
+    create index if not exists oauth_refresh_tokens_issuer_idx
+      on oauth_refresh_tokens(issuer);
+  `);
+}
+
 function migrateWorkspaceConversationBindings(sqlite: Database.Database): void {
   sqlite.exec(`
     create table if not exists workspace_conversation_bindings (
@@ -237,7 +260,12 @@ function migrateLocalAgentEffortRename(sqlite: Database.Database): void {
 
 function addColumnIfMissing(
   sqlite: Database.Database,
-  table: "workspace_sessions" | "local_agent_sessions",
+  table:
+    | "workspace_sessions"
+    | "local_agent_sessions"
+    | "oauth_clients"
+    | "oauth_access_tokens"
+    | "oauth_refresh_tokens",
   column: string,
   definition: string,
 ): void {
