@@ -1,4 +1,3 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import {
   buildLocalAgentCatalog,
@@ -15,6 +14,7 @@ import {
 } from "./local-agent-presentation.js";
 import type { LocalAgentRecord, LocalAgentWorkspaceScope } from "./local-agent-store.js";
 import type { ServerConfig } from "./config.js";
+import type { McpRegistrationTarget } from "./mcp-modern-server.js";
 import type { ReviewCheckpointManager } from "./review-checkpoints.js";
 import {
   logToolCall,
@@ -39,7 +39,7 @@ const TASK_POLL_INTERVAL_MS = 1_000;
 export type LocalTaskAgentClient = Pick<LocalAgentClient, "start" | "get">;
 
 export interface LocalTaskToolOptions {
-  server: McpServer;
+  server: McpRegistrationTarget;
   config: ServerConfig;
   workspaces: WorkspaceRegistry;
   reviewCheckpoints: ReviewCheckpointManager;

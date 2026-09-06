@@ -11,10 +11,10 @@ import {
 } from "node:fs/promises";
 import { isAbsolute, join, normalize, sep } from "node:path";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { ArtifactError } from "./artifact-error.js";
 import type { ServerConfig } from "./config.js";
+import type { McpRegistrationTarget } from "./mcp-modern-server.js";
 import {
   describeIncomingArtifactValue,
   IncomingArtifactAdapterRegistry,
@@ -85,7 +85,7 @@ interface ArtifactDestination {
 }
 
 export function registerArtifactTools(
-  server: McpServer,
+  server: McpRegistrationTarget,
   {
     config,
     workspaces,

@@ -20,6 +20,8 @@
 
 DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and run code in your real local projects — your files, your tools, your terminal — without uploading anything to a third party. You run it on your machine, expose it through a tunnel you control, and approve the connection with a password only you have.
 
+The same `/mcp` endpoint serves MCP 2026-07-28 requests and older 2025-era Streamable HTTP clients automatically. Legacy clients keep their sessionful behavior, and a fresh `initialize` can recover even when a page refresh carries an old or stale MCP session ID. There is no protocol mode to configure.
+
 ## Sponsors and Special Thanks
 <!-- 
 

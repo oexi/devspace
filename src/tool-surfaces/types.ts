@@ -1,4 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpRegistrationTarget } from "../mcp-modern-server.js";
 import type { ProcessSessionManager } from "../process-sessions.js";
 import type { ServerConfig } from "../config.js";
 import type { ReviewCheckpointManager } from "../review-checkpoints.js";
@@ -75,7 +75,7 @@ export interface ToolWidgetDescriptorMeta {
 }
 
 export interface ToolRegistrationContext {
-  server: McpServer;
+  server: McpRegistrationTarget;
   config: ServerConfig;
   workspaces: WorkspaceRegistry;
   processSessions: ProcessSessionManager;
