@@ -662,7 +662,7 @@ test("open_workspace scopes checkout reuse to OpenAI session metadata", async (t
   assert.ok(Array.isArray(structuredContent(unscoped).agentsFiles));
 });
 
-test("HTTP endpoint serves MCP 2026-07-28 while preserving stateful legacy refresh recovery", async (t) => {
+test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests", async (t) => {
   const { root, localBaseUrl, accessToken } = await httpServerFixture(
     t,
     "devspace-modern-http-test-",
@@ -734,48 +734,18 @@ test("HTTP endpoint serves MCP 2026-07-28 while preserving stateful legacy refre
   assert.equal(repeatedBody.result?.structuredContent?.workspaceId, modernWorkspaceId);
   assert.equal(repeatedBody.result?.structuredContent?.agentsFiles, undefined);
 
-  const firstLegacyInit = await postLegacyInitialize(localBaseUrl, accessToken);
-  assert.equal(firstLegacyInit.status, 200, await firstLegacyInit.clone().text());
-  const firstSessionId = firstLegacyInit.headers.get("mcp-session-id");
-  assert.ok(firstSessionId, "legacy initialize must create a stateful session");
-
-  const firstLegacyTools = await postLegacyMcp(
+  const legacy = await postLegacyMcp(
     localBaseUrl,
     accessToken,
-    "tools/list",
-    {},
-    firstSessionId,
+    "initialize",
+    {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "devspace-legacy-test", version: "1.0.0" },
+    },
   );
-  assert.equal(firstLegacyTools.status, 200, await firstLegacyTools.clone().text());
-  assert.match(await firstLegacyTools.text(), /"open_workspace"/);
-
-  const refreshInit = await postLegacyInitialize(
-    localBaseUrl,
-    accessToken,
-    firstSessionId,
-  );
-  assert.equal(refreshInit.status, 200, await refreshInit.clone().text());
-  const refreshSessionId = refreshInit.headers.get("mcp-session-id");
-  assert.ok(refreshSessionId);
-  assert.notEqual(refreshSessionId, firstSessionId);
-
-  const refreshedTools = await postLegacyMcp(
-    localBaseUrl,
-    accessToken,
-    "tools/list",
-    {},
-    refreshSessionId,
-  );
-  assert.equal(refreshedTools.status, 200, await refreshedTools.clone().text());
-  assert.match(await refreshedTools.text(), /"open_workspace"/);
-
-  const staleHeaderInit = await postLegacyInitialize(
-    localBaseUrl,
-    accessToken,
-    "stale-session-from-refresh",
-  );
-  assert.equal(staleHeaderInit.status, 200, await staleHeaderInit.clone().text());
-  assert.ok(staleHeaderInit.headers.get("mcp-session-id"));
+  assert.notEqual(legacy.status, 200, await legacy.clone().text());
+  assert.equal(legacy.headers.get("mcp-session-id"), null);
 });
 
 interface HttpServerFixture {
@@ -928,30 +898,11 @@ function postModernMcp(
   });
 }
 
-function postLegacyInitialize(
-  localBaseUrl: string,
-  accessToken: string,
-  sessionId?: string,
-): Promise<Response> {
-  return postLegacyMcp(
-    localBaseUrl,
-    accessToken,
-    "initialize",
-    {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "devspace-legacy-test", version: "1.0.0" },
-    },
-    sessionId,
-  );
-}
-
 function postLegacyMcp(
   localBaseUrl: string,
   accessToken: string,
   method: string,
   params: Record<string, unknown>,
-  sessionId?: string,
 ): Promise<Response> {
   return fetch(`${localBaseUrl}/mcp`, {
     method: "POST",
@@ -959,7 +910,6 @@ function postLegacyMcp(
       authorization: `Bearer ${accessToken}`,
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      ...(sessionId ? { "mcp-session-id": sessionId } : {}),
     },
     body: JSON.stringify({
       jsonrpc: "2.0",

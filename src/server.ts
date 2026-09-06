@@ -6,11 +6,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
-import { createMcpHandler, isLegacyRequest } from "@modelcontextprotocol/server";
-import { toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
+import { createMcpHandler } from "@modelcontextprotocol/server";
+import { toNodeHandler } from "@modelcontextprotocol/node";
 import {
   registerAppResource,
   registerAppTool,
@@ -32,15 +30,9 @@ import {
   logEvent,
   requestIp,
   requestPath,
-  sessionIdPrefix,
 } from "./logger.js";
 import { readFileTool } from "./pi-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
-import {
-  McpSessionRegistry,
-  resolveMcpSessionRoute,
-  type McpSessionCloseResult,
-} from "./mcp-sessions.js";
 import {
   compileMcpRegistrationSurface,
   createModernMcpServerAdapter,
@@ -89,11 +81,6 @@ import {
   type ToolSurface,
 } from "./tool-surfaces/types.js";
 
-type Transport = StreamableHTTPServerTransport;
-// MCP clients can reconnect without closing the previous transport. Bound stale
-// session retention so abandoned MCP servers do not accumulate for the life of the process.
-const MCP_SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
-const MCP_SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1_000;
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 
 function mcpServerInfo() {
@@ -823,7 +810,6 @@ export function createServer(
     host: config.host,
     ...(allowedHosts ? { allowedHosts } : {}),
   });
-  const transports = new McpSessionRegistry<Transport>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
@@ -933,37 +919,6 @@ export function createServer(
   }, WORKSPACE_CLEANUP_INTERVAL_MS);
   workspaceCleanupTimer.unref();
 
-  const logSessionCloseResults = (
-    reason: "idle_timeout" | "server_shutdown",
-    results: McpSessionCloseResult[],
-  ) => {
-    for (const result of results) {
-      if (result.error) {
-        logEvent(config.logging, "warn", "mcp_session_close_failed", {
-          reason,
-          sessionIdPrefix: sessionIdPrefix(result.sessionId),
-          error:
-            result.error instanceof Error
-              ? result.error.message
-              : String(result.error),
-        });
-        continue;
-      }
-
-      logEvent(config.logging, "info", "mcp_session_closed", {
-        reason,
-        sessionIdPrefix: sessionIdPrefix(result.sessionId),
-      });
-    }
-  };
-
-  const sessionCleanupTimer = setInterval(() => {
-    void transports
-      .closeIdle(MCP_SESSION_IDLE_TIMEOUT_MS)
-      .then((results) => logSessionCloseResults("idle_timeout", results));
-  }, MCP_SESSION_CLEANUP_INTERVAL_MS);
-  sessionCleanupTimer.unref();
-
   if (config.logging.trustProxy) {
     app.set("trust proxy", true);
   }
@@ -1023,8 +978,6 @@ export function createServer(
 
   app.all("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
-    const sessionId = req.header("mcp-session-id");
-    const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
 
     await new Promise<void>((resolve, reject) => {
       bearerAuth(req, res, (error?: unknown) => {
@@ -1049,71 +1002,10 @@ export function createServer(
     logEvent(config.logging, "debug", "mcp_request", {
       requestId,
       method: req.method,
-      sessionIdPresent: Boolean(sessionId),
-      sessionIdPrefix: sessionIdPrefix(sessionId),
-      isInitialize: initializeRequest,
     });
 
     try {
-      const webRequest = await toWebRequest(req, req.body);
-      if (!await isLegacyRequest(webRequest, req.body)) {
-        await modernNodeHandler(req, res, req.body);
-        return;
-      }
-
-      let transport: Transport | undefined;
-
-      const sessionRoute = resolveMcpSessionRoute(
-        transports,
-        sessionId,
-        initializeRequest,
-      );
-
-      if (sessionRoute.kind === "initialize") {
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (newSessionId) => {
-            if (transport) transports.register(newSessionId, transport);
-            logEvent(config.logging, "info", "mcp_session_created", {
-              requestId,
-              sessionIdPrefix: sessionIdPrefix(newSessionId),
-              ...requestLogFields(req, config),
-            });
-          },
-        });
-
-        transport.onclose = () => {
-          const closedSessionId = transport?.sessionId;
-          if (closedSessionId && transports.remove(closedSessionId)) {
-            logEvent(config.logging, "info", "mcp_session_closed", {
-              reason: "transport_close",
-              sessionIdPrefix: sessionIdPrefix(closedSessionId),
-            });
-          }
-        };
-
-        const server = createMcpServer(
-          config,
-          workspaces,
-          reviewCheckpoints,
-          processSessions,
-          resolveLocalAgentProviders,
-          incomingArtifactAdapters,
-          undefined,
-          toolActivities.track,
-        );
-        await server.connect(transport);
-      } else if (sessionRoute.kind === "existing") {
-        transport = sessionRoute.transport;
-      } else if (sessionRoute.kind === "unknown") {
-        sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
-        return;
-      } else {
-        sendJsonRpcError(res, 400, -32000, "No valid MCP session");
-        return;
-      }
-
-      await transport.handleRequest(req, res, req.body);
+      await modernNodeHandler(req, res, req.body);
     } catch (error) {
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,
@@ -1132,7 +1024,6 @@ export function createServer(
     localAgentProviders,
     close: () => {
       closePromise ??= (async () => {
-        clearInterval(sessionCleanupTimer);
         clearInterval(workspaceCleanupTimer);
         await workspaceCleanupPromise;
         try {
@@ -1143,8 +1034,6 @@ export function createServer(
           });
         }
         await toolActivities.waitForIdle();
-        const results = await transports.closeAll();
-        logSessionCloseResults("server_shutdown", results);
         await processSessions.shutdown();
         oauthProvider.close();
         workspaceStore.close?.();

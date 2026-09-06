@@ -99,11 +99,9 @@ Configure the MCP client with the full MCP endpoint:
 https://your-tunnel-host.example.com/mcp
 ```
 
-Protocol compatibility is automatic. DevSpace serves MCP 2026-07-28 requests
-through the modern per-request handler while retaining sessionful compatibility
-for older 2025-era Streamable HTTP clients. A new `initialize` request can
-replace an inherited or stale MCP session after a client refresh, so there is no
-client-protocol setting to maintain.
+DevSpace serves MCP 2026-07-28 through the modern per-request handler. Older
+2025-era MCP protocol requests are not supported, so clients must support the
+current protocol.
 
 A Coding Agents-only setup skips this section.
 
