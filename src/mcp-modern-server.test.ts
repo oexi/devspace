@@ -146,6 +146,190 @@ test("modern registration adapter preserves resources", async (t) => {
   assert.match(await response.text(), /resource-ok:resource-chat/);
 });
 
+test("modern adapter publishes private cache hints and server identity", async (t) => {
+  const handler = createMcpHandler(() => {
+    const adapter = createModernMcpServerAdapter({
+      name: "devspace-modern-test",
+      version: "1.2.3",
+    });
+    registerAppTool(
+      adapter.registrationTarget,
+      "cached_tool",
+      { inputSchema: {}, _meta: {} },
+      async () => ({ content: [{ type: "text", text: "ok" }] }),
+    );
+    registerAppResource(
+      adapter.registrationTarget,
+      "Cached resource",
+      "ui://devspace/cache-test.html",
+      {},
+      async () => ({
+        contents: [{
+          uri: "ui://devspace/cache-test.html",
+          mimeType: "text/html",
+          text: "cached",
+        }],
+      }),
+    );
+    return adapter.server;
+  }, { legacy: "reject" });
+  t.after(async () => handler.close());
+
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["server/discover", {}],
+    ["tools/list", {}],
+    ["resources/list", {}],
+    ["resources/read", { uri: "ui://devspace/cache-test.html" }],
+  ];
+
+  for (const [method, params] of cases) {
+    const response = await handler.fetch(modernRequest(method, params));
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as {
+      result?: {
+        ttlMs?: number;
+        cacheScope?: string;
+        _meta?: Record<string, unknown>;
+      };
+    };
+    assert.equal(body.result?.ttlMs, 300_000, method);
+    assert.equal(body.result?.cacheScope, "private", method);
+    assert.deepEqual(
+      body.result?._meta?.["io.modelcontextprotocol/serverInfo"],
+      { name: "devspace-modern-test", version: "1.2.3" },
+      method,
+    );
+  }
+});
+
+test("modern handler rejects routing headers that disagree with the body", async (t) => {
+  const handler = createMcpHandler(() => {
+    const adapter = createModernMcpServerAdapter({
+      name: "devspace-modern-test",
+      version: "1.0.0",
+    });
+    registerAppTool(
+      adapter.registrationTarget,
+      "echo",
+      { inputSchema: {}, _meta: {} },
+      async () => ({ content: [{ type: "text", text: "ok" }] }),
+    );
+    return adapter.server;
+  }, { legacy: "reject" });
+  t.after(async () => handler.close());
+
+  const methodMismatch = await handler.fetch(modernRequest(
+    "tools/list",
+    {},
+    { headerMethod: "tools/call" },
+  ));
+  assert.equal(methodMismatch.status, 400);
+  assert.match(await methodMismatch.text(), /headers and body disagree/i);
+
+  const nameMismatch = await handler.fetch(modernRequest(
+    "tools/call",
+    { name: "echo", arguments: {} },
+    { headerName: "different-tool" },
+  ));
+  assert.equal(nameMismatch.status, 400);
+  assert.match(await nameMismatch.text(), /headers and body disagree/i);
+});
+
+test("concurrent modern requests keep request metadata isolated", async (t) => {
+  const handler = createMcpHandler(() => {
+    const adapter = createModernMcpServerAdapter({
+      name: "devspace-modern-test",
+      version: "1.0.0",
+    });
+    registerAppTool(
+      adapter.registrationTarget,
+      "echo_scope",
+      {
+        inputSchema: { value: z.string() },
+        _meta: {},
+      },
+      async ({ value }, { _meta }) => {
+        await new Promise((resolve) => setTimeout(resolve, value.length % 3));
+        return {
+          content: [{
+            type: "text",
+            text: `${value}:${String(_meta?.["openai/session"] ?? "missing")}`,
+          }],
+        };
+      },
+    );
+    return adapter.server;
+  }, { legacy: "reject" });
+  t.after(async () => handler.close());
+
+  const responses = await Promise.all(
+    Array.from({ length: 12 }, async (_, index) => {
+      const value = `value-${index}`;
+      const scope = `chat-${index}`;
+      const response = await handler.fetch(modernRequest("tools/call", {
+        name: "echo_scope",
+        arguments: { value },
+        _meta: { "openai/session": scope },
+      }));
+      assert.equal(response.status, 200, await response.clone().text());
+      const body = await response.json() as {
+        result?: { content?: Array<{ text?: string }> };
+      };
+      return body.result?.content?.[0]?.text;
+    }),
+  );
+
+  assert.deepEqual(
+    responses,
+    Array.from({ length: 12 }, (_, index) => `value-${index}:chat-${index}`),
+  );
+});
+
+test("modern request abort propagates into tool handlers", async (t) => {
+  let observedAbort = false;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const handler = createMcpHandler(() => {
+    const adapter = createModernMcpServerAdapter({
+      name: "devspace-modern-test",
+      version: "1.0.0",
+    });
+    registerAppTool(
+      adapter.registrationTarget,
+      "wait_for_abort",
+      { inputSchema: {}, _meta: {} },
+      async (_input, { signal }) => {
+        markStarted();
+        return new Promise<never>((_resolve, reject) => {
+          const onAbort = () => {
+            observedAbort = true;
+            reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        });
+      },
+    );
+    return adapter.server;
+  }, { legacy: "reject" });
+  t.after(async () => handler.close());
+
+  const controller = new AbortController();
+  const responsePromise = handler.fetch(modernRequest(
+    "tools/call",
+    { name: "wait_for_abort", arguments: {} },
+    { signal: controller.signal },
+  ));
+  await started;
+  controller.abort(new Error("client disconnected"));
+
+  const response = await responsePromise;
+  assert.equal(response.status, 499);
+  assert.equal(observedAbort, true);
+});
+
 test("compiled registration surface reuses static tool and resource definitions", async (t) => {
   let registrationBuilds = 0;
   const bindRegistrationSurface = compileMcpRegistrationSurface((target) => {
@@ -215,7 +399,15 @@ test("modern adapter error logging preserves error and cause identity", () => {
   });
 });
 
-function modernRequest(method: string, params: Record<string, unknown>): Request {
+function modernRequest(
+  method: string,
+  params: Record<string, unknown>,
+  options: {
+    headerMethod?: string;
+    headerName?: string;
+    signal?: AbortSignal;
+  } = {},
+): Request {
   const mcpName = typeof params.name === "string"
     ? params.name
     : typeof params.uri === "string"
@@ -223,11 +415,14 @@ function modernRequest(method: string, params: Record<string, unknown>): Request
       : undefined;
   return new Request("https://example.test/mcp", {
     method: "POST",
+    signal: options.signal,
     headers: {
       "content-type": "application/json",
-      "mcp-method": method,
+      "mcp-method": options.headerMethod ?? method,
       "mcp-protocol-version": "2026-07-28",
-      ...(mcpName ? { "mcp-name": mcpName } : {}),
+      ...(options.headerName || mcpName
+        ? { "mcp-name": options.headerName ?? mcpName! }
+        : {}),
     },
     body: JSON.stringify({
       jsonrpc: "2.0",

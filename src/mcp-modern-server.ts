@@ -1,15 +1,27 @@
 import {
   McpServer,
+  type Implementation,
   type ServerContext,
   type ServerOptions,
 } from "@modelcontextprotocol/server";
-import type { McpServer as LegacyMcpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Implementation as LegacyImplementation } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  registerAppResource,
+  registerAppTool,
+} from "@modelcontextprotocol/ext-apps/server";
 
-export type McpRegistrationTarget = Pick<
-  LegacyMcpServer,
-  "registerTool" | "registerResource"
->;
+type AppToolRegistrationTarget = Parameters<typeof registerAppTool>[0];
+type AppResourceRegistrationTarget = Parameters<typeof registerAppResource>[0];
+
+export type McpRegistrationTarget = AppToolRegistrationTarget
+  & AppResourceRegistrationTarget;
+
+export const MODERN_MCP_CACHE_HINTS = Object.freeze({
+  "server/discover": { ttlMs: 300_000, cacheScope: "private" },
+  "tools/list": { ttlMs: 300_000, cacheScope: "private" },
+  "resources/list": { ttlMs: 300_000, cacheScope: "private" },
+  "resources/templates/list": { ttlMs: 300_000, cacheScope: "private" },
+  "resources/read": { ttlMs: 300_000, cacheScope: "private" },
+} satisfies NonNullable<ServerOptions["cacheHints"]>);
 
 export interface ModernMcpServerAdapter {
   server: McpServer;
@@ -27,10 +39,16 @@ type ModernRegisterTool = (
 type ModernRegisterResource = (...args: unknown[]) => unknown;
 
 export function createModernMcpServerAdapter(
-  serverInfo: LegacyImplementation,
+  serverInfo: Implementation,
   options?: ServerOptions,
 ): ModernMcpServerAdapter {
-  const server = new McpServer(serverInfo, options);
+  const server = new McpServer(serverInfo, {
+    ...options,
+    cacheHints: {
+      ...MODERN_MCP_CACHE_HINTS,
+      ...(options?.cacheHints ?? {}),
+    },
+  });
   const registerModernTool = server.registerTool.bind(server) as unknown as ModernRegisterTool;
   const registerModernResource = server.registerResource.bind(server) as unknown as ModernRegisterResource;
   const registrationTarget: McpRegistrationTarget = {
@@ -41,8 +59,8 @@ export function createModernMcpServerAdapter(
     ) => registerModernTool(
       name,
       definition,
-      async (input, context) => handler(input, legacyToolHandlerExtra(context)),
-    )) as LegacyMcpServer["registerTool"],
+      async (input, context) => handler(input, registrationHandlerExtra(context)),
+    )) as McpRegistrationTarget["registerTool"],
     registerResource: ((...args: unknown[]) => {
       const callback = args.at(-1) as (...callbackArgs: unknown[]) => unknown;
       return registerModernResource(
@@ -51,11 +69,11 @@ export function createModernMcpServerAdapter(
           const context = callbackArgs.at(-1) as ServerContext;
           return callback(
             ...callbackArgs.slice(0, -1),
-            legacyToolHandlerExtra(context),
+            registrationHandlerExtra(context),
           );
         },
       );
-    }) as unknown as LegacyMcpServer["registerResource"],
+    }) as unknown as McpRegistrationTarget["registerResource"],
   };
 
   return {
@@ -101,7 +119,7 @@ export function modernMcpAdapterErrorLogFields(error: Error): Record<string, unk
   };
 }
 
-function legacyToolHandlerExtra(context: ServerContext): Record<string, unknown> {
+function registrationHandlerExtra(context: ServerContext): Record<string, unknown> {
   return {
     signal: context.mcpReq.signal,
     authInfo: context.http?.authInfo,

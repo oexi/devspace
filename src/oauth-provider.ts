@@ -9,7 +9,10 @@ import type {
   OAuthTokenRevocationRequest,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+import {
+  checkResourceAllowed,
+  resourceUrlFromServerUrl,
+} from "@modelcontextprotocol/server";
 import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
 
 export interface OAuthConfig {

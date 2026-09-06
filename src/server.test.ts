@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Result } from "better-result";
 import { loadConfig, type ServerConfig, type ToolMode } from "./config.js";
 import type { LocalAgentProviderAvailability } from "./local-agent-availability.js";
@@ -17,7 +18,11 @@ import type { LocalTaskAgentClient } from "./local-task-tools.js";
 import type { LocalAgentRecord } from "./local-agent-store.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
-import { createMcpServer, createServer } from "./server.js";
+import {
+  createServer,
+  mcpServerInstructions,
+  registerMcpSurface,
+} from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
@@ -684,9 +689,24 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
   );
   assert.equal(discovery.status, 200, await discovery.clone().text());
   const discoveryBody = await discovery.json() as {
-    result?: { supportedVersions?: string[] };
+    result?: {
+      supportedVersions?: string[];
+      ttlMs?: number;
+      cacheScope?: string;
+      _meta?: Record<string, unknown>;
+    };
   };
   assert.ok(discoveryBody.result?.supportedVersions?.includes("2026-07-28"));
+  assert.equal(discoveryBody.result?.ttlMs, 300_000);
+  assert.equal(discoveryBody.result?.cacheScope, "private");
+  const packageJson = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version?: unknown };
+  const serverInfo = discoveryBody.result?._meta?.["io.modelcontextprotocol/serverInfo"] as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(serverInfo?.name, "devspace");
+  assert.equal(serverInfo?.version, packageJson.version);
 
   const listed = await postModernMcp(
     localBaseUrl,
@@ -696,9 +716,15 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
   );
   assert.equal(listed.status, 200, await listed.clone().text());
   const listBody = await listed.json() as {
-    result?: { tools?: Array<{ name?: string }> };
+    result?: {
+      tools?: Array<{ name?: string }>;
+      ttlMs?: number;
+      cacheScope?: string;
+    };
   };
   assert.ok(listBody.result?.tools?.some((tool) => tool.name === "open_workspace"));
+  assert.equal(listBody.result?.ttlMs, 300_000);
+  assert.equal(listBody.result?.cacheScope, "private");
 
   const called = await postModernMcp(
     localBaseUrl,
@@ -1010,7 +1036,12 @@ async function fixture(
   );
   const store = new SqliteWorkspaceStore(stateDir);
   const workspaces = new WorkspaceRegistry(config, store);
-  const server = createMcpServer(
+  const server = new McpServer(
+    { name: "devspace-test", version: "1.0.0" },
+    { instructions: mcpServerInstructions(config) },
+  );
+  registerMcpSurface(
+    server,
     config,
     workspaces,
     createReviewCheckpointManager(),

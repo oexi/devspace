@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
-import { createMcpHandler } from "@modelcontextprotocol/server";
+import {
+  checkResourceAllowed,
+  createMcpHandler,
+  getOAuthProtectedResourceMetadataUrl,
+  resourceUrlFromServerUrl,
+} from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import {
   registerAppResource,
@@ -82,12 +85,23 @@ import {
 } from "./tool-surfaces/types.js";
 
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
+const DEVSPACE_VERSION = packageVersion();
+
+function packageVersion(): string {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version?: unknown };
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("DevSpace package.json must contain a non-empty version");
+  }
+  return packageJson.version;
+}
 
 function mcpServerInfo() {
   return {
     name: "devspace",
     title: "DevSpace",
-    version: "0.1.0",
+    version: DEVSPACE_VERSION,
     description:
       "Coding tools for project workspaces. Open each project or worktree once, then reuse its workspaceId.",
   };
@@ -100,7 +114,7 @@ interface RunningServer {
   close(): Promise<void>;
 }
 
-type TrackToolActivity = <T>(operation: () => Promise<T>) => Promise<T>;
+export type TrackToolActivity = <T>(operation: () => Promise<T>) => Promise<T>;
 
 class ToolActivityTracker {
   private readonly active = new Set<Promise<unknown>>();
@@ -149,6 +163,10 @@ function serverInstructions(
   const common = `Use DevSpace for coding work.${workspaceRootInstruction} Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected.`;
 
   return `${common} ${toolSurface.instructions({ agents, skills })}${localTaskInstructions(config.subagents.enabled)}${artifactInstruction}${showChangesInstruction}`;
+}
+
+export function mcpServerInstructions(config: ServerConfig): string {
+  return serverInstructions(config, getToolSurface(config.toolMode));
 }
 
 function formatVisibleAgent(agent: {
@@ -317,38 +335,7 @@ async function assertWorkspaceAppAssets(): Promise<void> {
   }
 }
 
-export function createMcpServer(
-  config: ServerConfig,
-  workspaces: WorkspaceRegistry,
-  reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
-  processSessions: ProcessSessionManager,
-  resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
-  incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
-  taskAgentClient?: LocalTaskAgentClient,
-  trackToolActivity?: TrackToolActivity,
-): McpServer {
-  const toolSurface = getToolSurface(config.toolMode);
-  const server = new McpServer(
-    mcpServerInfo(),
-    {
-      instructions: serverInstructions(config, toolSurface),
-    },
-  );
-  registerMcpSurface(
-    server,
-    config,
-    workspaces,
-    reviewCheckpoints,
-    processSessions,
-    resolveLocalAgentProviders,
-    incomingArtifactAdapters,
-    taskAgentClient,
-    trackToolActivity,
-  );
-  return server;
-}
-
-function registerMcpSurface(
+export function registerMcpSurface(
   server: McpRegistrationTarget,
   config: ServerConfig,
   workspaces: WorkspaceRegistry,
@@ -831,7 +818,6 @@ export function createServer(
     config.subagents,
     getLocalAgentProviderAvailabilitySnapshot(),
   );
-  const modernToolSurface = getToolSurface(config.toolMode);
   const bindModernMcpSurface = compileMcpRegistrationSurface((target) => {
     registerMcpSurface(
       target,
@@ -854,7 +840,7 @@ export function createServer(
   const modernMcpHandler = createMcpHandler(() => {
     const adapter = createModernMcpServerAdapter(
       mcpServerInfo(),
-      { instructions: serverInstructions(config, modernToolSurface) },
+      { instructions: mcpServerInstructions(config) },
     );
     bindModernMcpSurface(adapter.registrationTarget);
     return adapter.server;
