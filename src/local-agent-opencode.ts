@@ -7,6 +7,7 @@ import type {
   SessionV2Info,
 } from "@opencode-ai/sdk/v2";
 import {
+  AgentProviderCancelledError,
   AgentProviderProtocolError,
   AgentProviderUnavailableError,
   captureAgentProviderResult,
@@ -14,6 +15,7 @@ import {
 import type {
   LocalAgentDriver,
   LocalAgentRunCallbacks,
+  LocalAgentRunControl,
   LocalAgentRunInput,
   LocalAgentRunResult,
   LocalAgentRuntime,
@@ -44,7 +46,11 @@ export class OpencodeRuntime implements LocalAgentRuntime {
     private readonly server: OpencodeServerLike,
   ) {}
 
-  async run(input: LocalAgentRunInput, callbacks?: LocalAgentRunCallbacks) {
+  async run(
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+    control?: LocalAgentRunControl,
+  ) {
     return captureAgentProviderResult({
       provider: this.provider,
       operation: "run",
@@ -73,8 +79,14 @@ export class OpencodeRuntime implements LocalAgentRuntime {
           if (model && (resumed || !initialModel)) {
             await this.client.v2.session.switchModel({ sessionID: sessionId, model }, { throwOnError: true });
           }
+          if (control?.signal.aborted) throw opencodeCancelledError();
+          control?.registerCancelHandler(async () => {
+            await this.client.v2.session.interrupt({ sessionID: sessionId }, { throwOnError: true });
+          });
+          if (control?.signal.aborted) throw opencodeCancelledError();
           const promptResult = await promptOpencodeSession(this.client, sessionId, input);
           await waitForOpencodeSession(this.client, sessionId, promptResult);
+          if (control?.signal.aborted) throw opencodeCancelledError();
           const promptId = extractOpenCodePromptId(promptResult);
           const messages = await readOpencodeMessages(this.client, sessionId, promptId);
           const finalResponse = requireFinalResponse(
@@ -87,6 +99,7 @@ export class OpencodeRuntime implements LocalAgentRuntime {
             items: [promptResult, messages],
           };
         } catch (error) {
+          if (control?.signal.aborted) throw opencodeCancelledError(error);
           if (isOpenCodeTransportFailure(error)) {
             this.alive = false;
             throw new AgentProviderUnavailableError({
@@ -118,6 +131,17 @@ export class OpencodeRuntime implements LocalAgentRuntime {
     this.alive = false;
     this.server.close();
   }
+}
+
+function opencodeCancelledError(cause?: unknown): AgentProviderCancelledError {
+  return new AgentProviderCancelledError({
+    code: "PROVIDER_CANCELLED",
+    provider: "opencode",
+    operation: "run",
+    retryable: false,
+    ...(cause === undefined ? {} : { cause }),
+    message: "OpenCode agent turn was cancelled.",
+  });
 }
 
 export class OpencodeLocalAgentDriver implements LocalAgentDriver {

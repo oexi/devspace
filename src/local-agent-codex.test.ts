@@ -12,6 +12,7 @@ import {
   sandboxPolicyFor,
 } from "./local-agent-codex.js";
 import { toAgentErrorPayload } from "./local-agent-errors.js";
+import type { LocalAgentRunControl } from "./local-agent-runtime.js";
 
 const cachedContext = { agentId: "agt_test", provider: "codex" as const, workspaceRoot: "/tmp/project" };
 
@@ -62,6 +63,7 @@ if (process.platform !== "win32") {
   await writeFile(command, `#!/usr/bin/env node
 import readline from "node:readline";
 let turn = 0;
+const pendingTurns = new Map();
 const output = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
@@ -77,10 +79,23 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     output({ id: message.id, result: {} });
     return;
   }
+  if (message.method === "turn/interrupt") {
+    output({ id: message.id, result: {} });
+    const pending = pendingTurns.get(message.params.threadId);
+    if (pending && pending.turnId === message.params.turnId) {
+      pendingTurns.delete(message.params.threadId);
+      output({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: pending.turnId, status: "interrupted", items: [] } } });
+    }
+    return;
+  }
   if (message.method === "turn/start") {
     turn += 1;
     const turnId = "turn_" + turn;
     output({ id: message.id, result: { turn: { id: turnId } } });
+    if (message.params.input[0].text === "hold") {
+      pendingTurns.set(message.params.threadId, { turnId });
+      return;
+    }
     setImmediate(() => {
       if (message.params.input[0].text === "fail") {
         output({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: turnId, status: "failed", error: { message: "fake failure" } } } });
@@ -150,11 +165,57 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       assert.ok(protocolFailure.error.cause, "provider protocol cause remains available internally");
       assert.equal("cause" in toAgentErrorPayload(protocolFailure.error), false);
     }
+    const cancellation = createRunControl();
+    const pendingCancellation = runtime.run({
+      prompt: "hold",
+      workspaceRoot: "/tmp/project",
+      providerSessionId: first.providerSessionId ?? undefined,
+    }, undefined, cancellation.control);
+    await waitFor(() => cancellation.hasHandler());
+    await cancellation.cancel();
+    const cancelled = await pendingCancellation;
+    assert.equal(cancelled.isErr(), true);
+    if (cancelled.isErr()) assert.equal(cancelled.error.code, "PROVIDER_CANCELLED");
+    assert.equal(runtime.isAlive(), true, "interrupting one Codex turn keeps the shared app-server alive");
+    const afterCancel = await runtime.run({
+      prompt: "after cancel",
+      workspaceRoot: "/tmp/project",
+      providerSessionId: first.providerSessionId ?? undefined,
+    });
+    assert.equal(afterCancel.isOk(), true, "the same Codex runtime remains reusable after cancellation");
     await runtime.releaseSession("thread_new");
   } finally {
     await runtime.close();
     await runtime.close();
     await rm(root, { recursive: true, force: true });
+  }
+}
+
+function createRunControl(): {
+  control: LocalAgentRunControl;
+  cancel: () => Promise<void>;
+  hasHandler: () => boolean;
+} {
+  const controller = new AbortController();
+  let handler: (() => void | Promise<void>) | undefined;
+  return {
+    control: {
+      signal: controller.signal,
+      registerCancelHandler(next) { handler = next; },
+    },
+    cancel: async () => {
+      controller.abort(new DOMException("cancelled", "AbortError"));
+      await handler?.();
+    },
+    hasHandler: () => handler !== undefined,
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for condition.");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
 }
 

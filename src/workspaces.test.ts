@@ -147,6 +147,10 @@ test("persisted checkout and worktree sessions restore after recreating the regi
 
     assert.equal(restoredCheckout.root, context.root);
     assert.equal(restoredCheckout.mode, "checkout");
+    assert.deepEqual(
+      restoredCheckout.agentProfiles.map((profile) => profile.name),
+      ["reviewer"],
+    );
     assert.equal(restoredWorktree.root, worktree.workspace.root);
     assert.equal(restoredWorktree.mode, "worktree");
     assert.equal(restoredWorktree.sourceRoot, gitRoot);

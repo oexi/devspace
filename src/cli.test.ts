@@ -111,7 +111,7 @@ try {
       if (request.method === "agent.start") {
         socket.end(encodeLocalAgentDaemonResponse({
           requestId: request.requestId,
-          protocolVersion: 3,
+          protocolVersion: 4,
           ok: false,
           error: {
             code: "UNKNOWN_TARGET",
@@ -124,10 +124,12 @@ try {
       }
       const result = request.method === "agent.list"
         ? [current]
+        : request.method === "agent.cancel"
+          ? current
         : request.method === "hello"
           ? {
               state: "ready",
-              protocolVersion: 3,
+              protocolVersion: 4,
               pid: process.pid,
               endpoint: daemonSocket,
               startedAt: "now",
@@ -138,7 +140,7 @@ try {
           : null;
       socket.end(encodeLocalAgentDaemonResponse({
         requestId: request.requestId,
-        protocolVersion: 3,
+        protocolVersion: 4,
         ok: true,
         result,
       }));
@@ -242,6 +244,30 @@ try {
     assert.equal(payload.error.code, "UNKNOWN_TARGET");
     assert.equal(payload.error.retryable, false);
     assert.equal(payload.error.target, "missing");
+
+    const { stdout: cancelOutput } = await execFileAsync(
+      "node",
+      ["--import", "tsx", "src/cli.ts", "agents", "cancel", current.id, "--json"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ...cliConfigEnv,
+          DEVSPACE_WORKSPACE_ID: "ws_current",
+          DEVSPACE_WORKSPACE_ROOT: projectRoot,
+        },
+      },
+    );
+    assert.equal(
+      cancelOutput,
+      `${JSON.stringify({ id: current.id, status: "completed", response: "Review complete." })}\n`,
+    );
+    const cancelRequest = [...daemonRequests].reverse().find((request) => request.method === "agent.cancel");
+    assert.deepEqual(cancelRequest?.params, {
+      id: current.id,
+      scope: { workspaceId: "ws_current", workspaceRoot: realpathSync.native(projectRoot) },
+    });
 
     await assert.rejects(
       execFileAsync(

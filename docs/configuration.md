@@ -86,12 +86,17 @@ rejected so spelling mistakes cannot silently alter behavior.
 | `codex` | Default. `open_workspace`, `read`, `apply_patch`, `exec_command`, `write_stdin`, and `show_changes`. |
 | `claude` | `open_workspace`, `read`, `write`, `edit`, `bash`, and `show_changes`. |
 
-When `subagents.enabled` is `true`, both modes additionally expose `run_task`
-and `wait_task`. `run_task` delegates one coherent multi-step coding task to a
-bounded local worker; `wait_task` performs a long wait when that worker has not
-finished yet. This is the preferred path for reducing host-visible MCP call
-volume during long implementation jobs while keeping the worker lifecycle
-explicit.
+When `subagents.enabled` is `true`, both modes additionally expose `run_task`,
+`continue_task`, `cancel_task`, and `wait_task`. `run_task` delegates one coherent multi-step
+coding task to a bounded local worker and accepts an optional profile/provider
+`target` from `open_workspace`. `continue_task` sends follow-up work to that
+same logical worker and provider session. `cancel_task` interrupts only that
+task's current provider turn/session and leaves shared provider runtimes alive;
+cancelled tasks become `stopped` and can be continued later. `run_task`, `continue_task`, and
+`wait_task` wait locally for up to a bounded window; the default task wait is
+90 seconds and the maximum is 110 seconds. This is the preferred path for
+reducing host-visible MCP call volume during long implementation jobs while
+keeping the worker lifecycle explicit.
 
 The dedicated MCP tools `grep`, `glob`, and `ls` are not exposed. Each mode uses
 its shell tool with programs such as `rg`, `find`, and `ls` when it needs those
@@ -104,8 +109,8 @@ Setting `ui.enabled` to `false` removes the metadata but does not remove the
 
 The MCP host can still render its own generic entry for each tool invocation.
 That host-owned history is separate from DevSpace Apps UI metadata, so long
-tasks should prefer `run_task`/`wait_task` instead of many small low-level
-calls when subagents are enabled.
+tasks should prefer `run_task`/`continue_task`/`cancel_task`/`wait_task` instead of many small
+low-level calls when subagents are enabled.
 
 ## Skills and subagents
 

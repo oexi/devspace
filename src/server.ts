@@ -659,7 +659,20 @@ export function registerMcpSurface(
           .optional()
           .describe("Maximum number of lines to read."),
       },
-      outputSchema: resultOutputSchema(),
+      outputSchema: resultOutputSchema({
+        truncation: z
+          .object({
+            truncated: z.boolean(),
+            truncatedBy: z.enum(["lines", "bytes"]).nullable(),
+            totalLines: z.number().int().nonnegative(),
+            totalBytes: z.number().int().nonnegative(),
+            outputLines: z.number().int().nonnegative(),
+            outputBytes: z.number().int().nonnegative(),
+            firstLineExceedsLimit: z.boolean(),
+          })
+          .optional(),
+        nextOffset: z.number().int().positive().optional(),
+      }),
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, ...input }) => {
@@ -684,6 +697,10 @@ export function registerMcpSurface(
         return response;
       }
       workspaces.markReadPathLoaded(workspace, readPath);
+      const truncation = response.details?.truncation;
+      const nextOffset = truncation?.truncated && !truncation.firstLineExceedsLimit
+        ? (input.offset ?? 1) + truncation.outputLines
+        : undefined;
 
       logToolCall(config, {
         tool: toolNames.read,
@@ -697,6 +714,20 @@ export function registerMcpSurface(
         ...response,
         structuredContent: {
           result: contentText(response.content),
+          ...(truncation
+            ? {
+                truncation: {
+                  truncated: truncation.truncated,
+                  truncatedBy: truncation.truncatedBy,
+                  totalLines: truncation.totalLines,
+                  totalBytes: truncation.totalBytes,
+                  outputLines: truncation.outputLines,
+                  outputBytes: truncation.outputBytes,
+                  firstLineExceedsLimit: truncation.firstLineExceedsLimit,
+                },
+              }
+            : {}),
+          ...(nextOffset === undefined ? {} : { nextOffset }),
         },
       };
     },

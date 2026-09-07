@@ -177,6 +177,7 @@ devspace agents ls --json
 devspace agents targets --json
 devspace agents run <profile-or-provider> "<prompt>" --json
 devspace agents continue <id> "<prompt>" --json
+devspace agents cancel <id> --json
 devspace agents show <id> --json
 ```
 
@@ -201,6 +202,20 @@ Use `devspace agents continue <id>` for a later turn. The logical agent ID is
 the `agt_...` value returned by `run` or `ls`; provider session IDs are not
 accepted as substitutes.
 
+Use `devspace agents cancel <id>` to interrupt the currently running turn for
+that logical agent. Cancellation is per agent/session and does not shut down a
+runtime shared by other logical agents. A cancelled agent is stored as
+`stopped` with `PROVIDER_CANCELLED` and may later be continued with the same
+logical ID.
+
+When subagents are enabled through MCP, `run_task` accepts the same profile or
+provider names through its optional `target` field. `continue_task` accepts the
+logical `agt_...` task ID and continues that same provider session, while
+`cancel_task` interrupts only its current turn and `wait_task` observes a turn
+that is still running. These tools call the same
+local agent daemon used by the CLI; provider execution does not move into the
+MCP server process.
+
 The full profile body stays out of the model context until DevSpace launches the
 profile.
 
@@ -224,6 +239,6 @@ server can restart independently because it does not own this state.
 - Inferring changed files, tests, or diffs from worker output.
 - Exposing raw provider transcripts by default.
 - Teaching the model provider-specific CLIs.
-- First-class MCP agent tools. Future tools should call the same local agent
-  daemon used by `devspace agents` rather than executing providers in the MCP
-  server process.
+- Exposing provider-specific low-level agent lifecycle controls directly as MCP
+  tools. Host-facing task tools stay provider-neutral and use the local agent
+  daemon as their execution boundary.

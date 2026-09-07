@@ -6,7 +6,7 @@ import {
   type PiSessionLike,
 } from "./local-agent-pi.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
-import type { LocalAgentRuntimeContext } from "./local-agent-runtime.js";
+import type { LocalAgentRunControl, LocalAgentRuntimeContext } from "./local-agent-runtime.js";
 
 class FakePiSession implements PiSessionLike {
   readonly sessionId = "pi_session_1";
@@ -18,14 +18,25 @@ class FakePiSession implements PiSessionLike {
   effort?: unknown;
   activeTools: string[] = [];
   toolHistory: string[][] = [];
+  abortCount = 0;
+  private abortResolve?: () => void;
 
   async prompt(text: string): Promise<void> {
+    if (text === "hold") {
+      await new Promise<void>((resolve) => { this.abortResolve = resolve; });
+      this.abortResolve = undefined;
+    }
     const message = {
       role: "assistant",
       content: [{ type: "text", text: `response:${text}` }],
     };
     this.messages.push(message);
     for (const listener of this.listeners) listener({ type: "agent_end" } as AgentSessionEvent);
+  }
+
+  async abort(): Promise<void> {
+    this.abortCount += 1;
+    this.abortResolve?.();
   }
 
   subscribe(listener: AgentSessionEventListener): () => void {
@@ -110,6 +121,20 @@ assert.deepEqual(sessions[0]?.toolHistory, [
   ["read", "grep", "find", "ls"],
 ]);
 
+const cancellation = createRunControl();
+const pendingCancellation = pool.run(driver, context, {
+  prompt: "hold",
+  workspaceRoot: "/tmp/project",
+  writeMode: "allowed",
+}, undefined, cancellation.control);
+await waitFor(() => cancellation.hasHandler());
+await cancellation.cancel();
+const cancelledTurn = await pendingCancellation;
+assert.equal(cancelledTurn.isErr(), true);
+if (cancelledTurn.isErr()) assert.equal(cancelledTurn.error.code, "PROVIDER_CANCELLED");
+assert.equal(sessions[0]?.abortCount, 1);
+assert.equal(pool.size, 1, "cancelling a Pi turn keeps the warm session runtime alive");
+
 await pool.run(driver, { ...context, providerSessionId: "pi_session_1" }, {
   prompt: "fifth",
   workspaceRoot: "/tmp/project",
@@ -149,3 +174,31 @@ if (missingModel.isErr()) {
   assert.match(missingModel.error.message, /provider\/missing-model/);
 }
 await missingModelRuntime.value.close();
+
+function createRunControl(): {
+  control: LocalAgentRunControl;
+  cancel: () => Promise<void>;
+  hasHandler: () => boolean;
+} {
+  const controller = new AbortController();
+  let handler: (() => void | Promise<void>) | undefined;
+  return {
+    control: {
+      signal: controller.signal,
+      registerCancelHandler(next) { handler = next; },
+    },
+    cancel: async () => {
+      controller.abort(new DOMException("cancelled", "AbortError"));
+      await handler?.();
+    },
+    hasHandler: () => handler !== undefined,
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for condition.");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}

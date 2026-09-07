@@ -68,8 +68,43 @@ test("enabled subagents expose bounded high-level task tools", async (t) => {
   const names = tools.tools.map((tool) => tool.name);
 
   assert.ok(names.includes("run_task"));
+  assert.ok(names.includes("continue_task"));
+  assert.ok(names.includes("cancel_task"));
   assert.ok(names.includes("wait_task"));
   assert.match(context.client.getInstructions() ?? "", /prefer run_task as one bounded implementation task/i);
+  assert.match(context.client.getInstructions() ?? "", /use continue_task instead of starting a new worker/i);
+  assert.match(context.client.getInstructions() ?? "", /use cancel_task/i);
+
+  const runTask = tools.tools.find((tool) => tool.name === "run_task");
+  const waitTask = tools.tools.find((tool) => tool.name === "wait_task");
+  const targetSchema = runTask?.inputSchema?.properties?.target as {
+    description?: string;
+  } | undefined;
+  const runYieldSchema = runTask?.inputSchema?.properties?.yieldTimeMs as {
+    maximum?: number;
+    description?: string;
+  } | undefined;
+  const waitYieldSchema = waitTask?.inputSchema?.properties?.yieldTimeMs as {
+    maximum?: number;
+    description?: string;
+  } | undefined;
+
+  assert.match(targetSchema?.description ?? "", /profile or provider returned by open_workspace/i);
+  assert.equal(runYieldSchema?.maximum, 110_000);
+  assert.match(runYieldSchema?.description ?? "", /Defaults to 90000/);
+  assert.equal(waitYieldSchema?.maximum, 110_000);
+});
+
+test("both tool modes preserve nested instruction and skill guidance", async (t) => {
+  for (const toolMode of ["claude", "codex"] as const) {
+    await t.test(toolMode, async (nested) => {
+      const context = await fixture(nested, { toolMode, uiEnabled: false });
+      const instructions = context.client.getInstructions() ?? "";
+
+      assert.match(instructions, /Before working under a path listed in availableAgentsFiles/i);
+      assert.match(instructions, /When .*open_workspace.* returns available skills/i);
+    });
+  }
 });
 
 test("tracked MCP tool handlers run through the activity wrapper", async (t) => {
@@ -119,6 +154,26 @@ test("run_task changes participate in the turn-scoped show_changes review", asyn
       assert.ok(taskRecord);
       return Result.ok(taskRecord);
     },
+    async continue(agentId, prompt, overrides, scope) {
+      assert.ok(taskRecord);
+      assert.equal(agentId, taskRecord.id);
+      assert.equal(scope.workspaceId, taskRecord.workspaceId);
+      assert.equal(scope.workspaceRoot, taskRecord.workspaceRoot);
+      assert.equal(overrides?.writeMode, "allowed");
+      assert.match(prompt, /Continue the existing bounded coding task/);
+      await writeFile(join(scope.workspaceRoot, "task-output.txt"), "worker change\nfollow-up change\n");
+      taskRecord = {
+        ...taskRecord,
+        status: "idle",
+        latestResponse: "Applied the follow-up and reran the focused validation.",
+        updatedAt: "2026-09-04T00:00:02.000Z",
+      };
+      return Result.ok(taskRecord);
+    },
+    async cancel() {
+      assert.ok(taskRecord);
+      return Result.ok(taskRecord);
+    },
   } satisfies LocalTaskAgentClient;
   const context = await fixture(t, {
     git: true,
@@ -135,6 +190,7 @@ test("run_task changes participate in the turn-scoped show_changes review", asyn
     name: "run_task",
     arguments: {
       workspaceId,
+      target: "codex",
       instruction: "Create the task output file.",
     },
   });
@@ -150,6 +206,43 @@ test("run_task changes participate in the turn-scoped show_changes review", asyn
   const card = responseCard(review);
   assert.deepEqual(
     (card.files as Array<{ path: string }>).map((file) => file.path),
+    ["task-output.txt"],
+  );
+
+  const continued = await context.client.callTool({
+    name: "continue_task",
+    arguments: {
+      workspaceId,
+      taskId: taskOutput.taskId,
+      instruction: "Add the follow-up line and validate again.",
+      yieldTimeMs: 0,
+    },
+  });
+  const continuedOutput = structuredContent(continued);
+  assert.equal(continuedOutput.taskId, taskOutput.taskId);
+  assert.equal(continuedOutput.status, "completed");
+  assert.equal(continuedOutput.target, "codex");
+  assert.match(continuedOutput.result as string, /Applied the follow-up/);
+
+  const cancelledTerminal = await context.client.callTool({
+    name: "cancel_task",
+    arguments: {
+      workspaceId,
+      taskId: taskOutput.taskId,
+    },
+  });
+  const cancelledTerminalOutput = structuredContent(cancelledTerminal);
+  assert.equal(cancelledTerminalOutput.status, "completed");
+  assert.equal(cancelledTerminalOutput.cancelRequested, false);
+  assert.equal(cancelledTerminalOutput.cancelAcknowledged, false);
+
+  const followUpReview = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspaceId },
+  });
+  const followUpCard = responseCard(followUpReview);
+  assert.deepEqual(
+    (followUpCard.files as Array<{ path: string }>).map((file) => file.path),
     ["task-output.txt"],
   );
 });
@@ -251,6 +344,35 @@ test("direct read, write, and edit tools reject symlink escapes", { skip: platfo
   }
   assert.equal(await readFile(join(outside, "secret.txt"), "utf8"), "secret\n");
   await assert.rejects(() => stat(join(outside, "created.txt")), /ENOENT/);
+});
+
+test("read exposes structured truncation metadata and a continuation offset", async (t) => {
+  const context = await fixture(t, { uiEnabled: false });
+  const largeFile = Array.from({ length: 2_105 }, (_, index) => `line-${index + 1}`).join("\n") + "\n";
+  await writeFile(join(context.project, "large.txt"), largeFile);
+  const workspaceId = structuredContent(await callOpen(context.client, context.project)).workspaceId;
+  assert.equal(typeof workspaceId, "string");
+
+  const first = structuredContent(await context.client.callTool({
+    name: "read",
+    arguments: { workspaceId, path: "large.txt" },
+  }));
+  const truncation = first.truncation as {
+    truncated: boolean;
+    truncatedBy: string | null;
+    outputLines: number;
+  };
+
+  assert.equal(truncation.truncated, true);
+  assert.equal(truncation.truncatedBy, "lines");
+  assert.equal(truncation.outputLines, 2_000);
+  assert.equal(first.nextOffset, 2_001);
+
+  const continued = structuredContent(await context.client.callTool({
+    name: "read",
+    arguments: { workspaceId, path: "large.txt", offset: first.nextOffset },
+  }));
+  assert.match(continued.result as string, /line-2001/);
 });
 
 test("show_changes keeps model output compact and preserves the rich review card", async (t) => {

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
+  AgentProviderCancelledError,
   AgentProviderExecutionError,
   AgentProviderProtocolError,
   AgentProviderUnavailableError,
@@ -9,6 +10,7 @@ import {
 import type {
   LocalAgentDriver,
   LocalAgentRunCallbacks,
+  LocalAgentRunControl,
   LocalAgentRunInput,
   LocalAgentRunResult,
   LocalAgentRuntime,
@@ -33,6 +35,7 @@ export type PiSessionLike = Pick<
   | "messages"
   | "modelRegistry"
   | "prompt"
+  | "abort"
   | "subscribe"
   | "setActiveToolsByName"
   | "setModel"
@@ -63,7 +66,11 @@ export class PiSessionRuntime implements LocalAgentRuntime {
     });
   }
 
-  async run(input: LocalAgentRunInput, callbacks?: LocalAgentRunCallbacks) {
+  async run(
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+    control?: LocalAgentRunControl,
+  ) {
     return captureAgentProviderResult({
       provider: this.provider,
       operation: "run",
@@ -79,14 +86,18 @@ export class PiSessionRuntime implements LocalAgentRuntime {
         }
         await callbacks?.onSessionId?.(this.session.sessionId);
         await this.applyOverrides(input);
+        if (control?.signal.aborted) throw piCancelledError();
         this.events = [];
         const messageStart = this.session.messages.length;
         this.collectingEvents = true;
+        control?.registerCancelHandler(() => this.session.abort());
+        if (control?.signal.aborted) throw piCancelledError();
         try {
           await this.session.prompt(input.prompt);
         } finally {
           this.collectingEvents = false;
         }
+        if (control?.signal.aborted) throw piCancelledError();
         const currentMessages = this.session.messages.slice(messageStart);
         const finalResponse = extractPiFinalResponse({ messages: currentMessages });
         if (!finalResponse) {
@@ -159,6 +170,17 @@ export class PiSessionRuntime implements LocalAgentRuntime {
       this.session.setThinkingLevel(input.effort as never);
     }
   }
+}
+
+function piCancelledError(cause?: unknown): AgentProviderCancelledError {
+  return new AgentProviderCancelledError({
+    code: "PROVIDER_CANCELLED",
+    provider: "pi",
+    operation: "run",
+    retryable: false,
+    ...(cause === undefined ? {} : { cause }),
+    message: "Pi agent turn was cancelled.",
+  });
 }
 
 export class PiLocalAgentDriver implements LocalAgentDriver {

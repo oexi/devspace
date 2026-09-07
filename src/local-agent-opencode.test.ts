@@ -8,6 +8,7 @@ import {
   type OpencodeFactory,
 } from "./local-agent-opencode.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
+import type { LocalAgentRunControl } from "./local-agent-runtime.js";
 
 let sessionNumber = 0;
 const createInputs: unknown[] = [];
@@ -270,6 +271,48 @@ for (const writeMode of ["read_only", "allowed", "full_access"] as const) {
   assert.equal(typeof config.permission === "object" ? config.permission.task : undefined, "deny");
 }
 
+let interruptCalls = 0;
+let releaseCancellationWait: (() => void) | undefined;
+const cancellationClient = {
+  v2: {
+    session: {
+      async create() { return { data: { data: { id: "session_cancel" } } }; },
+      async switchAgent() {},
+      async prompt() { return { data: { data: { id: "prompt_cancel" } } }; },
+      async wait() {
+        await new Promise<void>((resolve) => { releaseCancellationWait = resolve; });
+        releaseCancellationWait = undefined;
+      },
+      async interrupt() {
+        interruptCalls += 1;
+        releaseCancellationWait?.();
+        return { data: { data: true } };
+      },
+      async messages() { return { data: { data: [] } }; },
+    },
+    health: { async get() { return { data: { healthy: true } }; } },
+  },
+} as unknown as OpencodeClientLike;
+const cancellationPool = new LocalAgentRuntimePool();
+const cancellationDriver = new OpencodeLocalAgentDriver(async () => ({
+  client: cancellationClient,
+  server: { close: () => undefined },
+}));
+const cancellation = createRunControl();
+const pendingCancellation = cancellationPool.run(cancellationDriver, {
+  agentId: "agt_cancel",
+  provider: "opencode",
+  workspaceRoot: "/tmp/project",
+}, { prompt: "hold", workspaceRoot: "/tmp/project" }, undefined, cancellation.control);
+await waitFor(() => cancellation.hasHandler() && releaseCancellationWait !== undefined);
+await cancellation.cancel();
+const cancelledTurn = await pendingCancellation;
+assert.equal(cancelledTurn.isErr(), true);
+if (cancelledTurn.isErr()) assert.equal(cancelledTurn.error.code, "PROVIDER_CANCELLED");
+assert.equal(interruptCalls, 1);
+assert.equal(cancellationPool.size, 1, "interrupting one OpenCode session keeps the shared server runtime alive");
+await cancellationPool.close();
+
 let promptFailureCount = 0;
 const applicationErrorClient = {
   v2: {
@@ -359,3 +402,31 @@ await recoveringPool.close();
 await pool.close();
 await pool.close();
 assert.equal(closeCalls, 1, "shared OpenCode server closes once");
+
+function createRunControl(): {
+  control: LocalAgentRunControl;
+  cancel: () => Promise<void>;
+  hasHandler: () => boolean;
+} {
+  const controller = new AbortController();
+  let handler: (() => void | Promise<void>) | undefined;
+  return {
+    control: {
+      signal: controller.signal,
+      registerCancelHandler(next) { handler = next; },
+    },
+    cancel: async () => {
+      controller.abort(new DOMException("cancelled", "AbortError"));
+      await handler?.();
+    },
+    hasHandler: () => handler !== undefined,
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for condition.");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}

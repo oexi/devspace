@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { delimiter, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
+  AgentProviderCancelledError,
   AgentProviderProtocolError,
   AgentProviderUnavailableError,
   captureAgentProviderResult,
@@ -21,6 +22,7 @@ import {
 import type {
   LocalAgentDriver,
   LocalAgentRunCallbacks,
+  LocalAgentRunControl,
   LocalAgentRunInput,
   LocalAgentRunResult,
   LocalAgentRuntime,
@@ -49,6 +51,7 @@ const ACP_COMMANDS: Record<AcpProvider, [string, ...string[]]> = {
 interface AcpConnectionLike {
   agent: {
     request(method: string, params?: unknown): Promise<unknown>;
+    cancel?(params: { sessionId: string }): Promise<void>;
   };
   close(error?: unknown): void;
   closed: Promise<void>;
@@ -123,7 +126,11 @@ export class AcpRuntime implements LocalAgentRuntime {
     });
   }
 
-  async run(input: LocalAgentRunInput, callbacks?: LocalAgentRunCallbacks) {
+  async run(
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+    control?: LocalAgentRunControl,
+  ) {
     return captureAgentProviderResult({
       provider: this.provider,
       operation: "run",
@@ -138,6 +145,7 @@ export class AcpRuntime implements LocalAgentRuntime {
           });
         }
         const sessionId = await this.openSession(input, callbacks);
+        if (control?.signal.aborted) throw acpCancelledError(this.provider);
         if (this.activeSessions.has(sessionId)) {
           throw new TypeError(`${this.provider} ACP session ${sessionId} already has an active turn.`);
         }
@@ -161,6 +169,20 @@ export class AcpRuntime implements LocalAgentRuntime {
           : undefined;
         try {
           queue.values.length = 0;
+          control?.registerCancelHandler(() => {
+            const cancel = this.connection.agent.cancel;
+            if (!cancel) {
+              throw new AgentProviderProtocolError({
+                code: "PROVIDER_PROTOCOL_ERROR",
+                provider: this.provider,
+                operation: "cancel",
+                retryable: false,
+                message: `${this.provider} ACP connection does not expose session cancellation.`,
+              });
+            }
+            return cancel.call(this.connection.agent, { sessionId });
+          });
+          if (control?.signal.aborted) throw acpCancelledError(this.provider);
           const standardResponse = this.connection.agent.request("session/prompt", {
             sessionId,
             prompt: [{ type: "text", text: input.prompt }],
@@ -169,6 +191,7 @@ export class AcpRuntime implements LocalAgentRuntime {
           const response = completion
             ? await Promise.race([standardResponse, completion])
             : await standardResponse;
+          if (control?.signal.aborted) throw acpCancelledError(this.provider, response);
           if (completion && isGrokPromptCompletion(response)) {
             await yieldToAcpQueue();
           } else if (promptId) {
@@ -406,6 +429,17 @@ export class AcpRuntime implements LocalAgentRuntime {
     this.promptSequence += 1;
     return `devspace-grok-prompt-${this.promptSequence}`;
   }
+}
+
+function acpCancelledError(provider: AcpProvider, cause?: unknown): AgentProviderCancelledError {
+  return new AgentProviderCancelledError({
+    code: "PROVIDER_CANCELLED",
+    provider,
+    operation: "run",
+    retryable: false,
+    ...(cause === undefined ? {} : { cause }),
+    message: `${provider} ACP agent turn was cancelled.`,
+  });
 }
 
 export class AcpLocalAgentDriver implements LocalAgentDriver {

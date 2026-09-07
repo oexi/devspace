@@ -144,7 +144,7 @@ Set `skills.enabled` to `false` to hide skills from workspace output. Enable
 Subagents and choose providers through `devspace init` or the persisted provider
 configuration. The bundled `subagents` skill teaches the minimal
 `devspace agents targets`, `devspace agents ls`, `devspace agents run`,
-`devspace agents continue`, and `devspace agents show` workflow. The catalog
+`devspace agents continue`, `devspace agents cancel`, and `devspace agents show` workflow. The catalog
 comes from `open_workspace`; `devspace agents ls` lists existing subagent
 sessions for that workspace.
 
@@ -171,14 +171,36 @@ DevSpace uses the Codex-style surface by default. It exposes:
 When subagents are enabled, both surfaces also expose:
 
 - `run_task`
+- `continue_task`
+- `cancel_task`
 - `wait_task`
 
 Use `run_task` for one coherent multi-step coding task that would otherwise
-require several separate reads, edits, and command calls. DevSpace runs that
-bounded worker locally and waits before returning. If the worker is still
-running, use `wait_task` with the returned task ID. This keeps the task
-lifecycle visible to the host while avoiding a large stream of host-visible
-MCP calls for the worker's internal implementation steps.
+require several separate reads, edits, and command calls. Pass `target` when an
+agent profile or provider returned by `open_workspace` is a better fit than the
+default worker. DevSpace runs that bounded worker locally and waits before
+returning. If the worker is still running, use `wait_task` with the returned
+task ID. Task waits default to 90 seconds and can wait up to 110 seconds so
+unattended work does not require frequent host-visible polling.
+
+After reviewing a worker's result, use `continue_task` when the same logical
+worker should address follow-up findings. It reuses the task ID and provider
+session instead of paying the context cost of starting a replacement worker.
+`continue_task` uses the same bounded wait behavior as `run_task` and
+`wait_task`.
+
+Use `cancel_task` when one running worker should stop. Cancellation is scoped to
+that logical task and its current provider turn/session; it does not close a
+shared Codex app-server, OpenCode server, or ACP process. A successfully
+cancelled task becomes `stopped` with `PROVIDER_CANCELLED` and can later be
+resumed with `continue_task`. Calling `cancel_task` after a task has already
+finished is idempotent and preserves the existing terminal status. Files
+written before cancellation remain in the workspace and are still included by
+`show_changes`.
+
+`cancel_task` stops the agent turn, not arbitrary background processes that the
+worker may have intentionally started. Use the normal process-management path
+when a long-lived server or other background process also needs to be stopped.
 
 For small or highly targeted operations, keep using the normal low-level
 tools. `run_task` is not intended to hide an entire conversation inside an
@@ -206,9 +228,10 @@ MCP results without creating an iframe for each call. Set `ui.enabled` to
 aggregate review tool available.
 
 An MCP host may still show its own generic tool-call entry for every invocation
-even when Apps UI metadata is disabled. For long coding jobs, `run_task` and
-`wait_task` reduce that host-visible invocation count; disabling DevSpace UI
-metadata alone cannot suppress host-owned tool-call history.
+even when Apps UI metadata is disabled. For long coding jobs,
+`run_task`/`continue_task` with long `wait_task` calls reduce that host-visible
+invocation count; disabling DevSpace UI metadata alone cannot suppress
+host-owned tool-call history.
 
 Call `show_changes` exactly once after the final file modification in any turn
 that changes files. It shows the combined changes for that turn and advances

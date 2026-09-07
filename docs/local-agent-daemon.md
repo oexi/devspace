@@ -70,7 +70,9 @@ and successful `daemon logs` output is `{ "logs": "<text>" }`.
 
 Agent identity is explicit at the client boundary. `agents run` starts a new
 logical agent from a profile or provider; `agents continue <id>` continues an
-existing logical agent. Provider session IDs are never accepted as logical
+existing logical agent; `agents cancel <id>` interrupts only that logical
+agent's current turn. A cancelled record becomes `stopped` with
+`PROVIDER_CANCELLED` and can later be continued. Provider session IDs are never accepted as logical
 agent IDs, and the daemon does not resolve ambiguous prefixes.
 
 Shutdown gives active turns a bounded graceful window. If that window expires,

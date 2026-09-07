@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalAgentManager } from "./local-agent-manager.js";
 import {
+  AgentProviderCancelledError,
   AgentProviderExecutionError,
   type AgentProviderError,
 } from "./local-agent-errors.js";
@@ -12,6 +13,7 @@ import type { LocalAgentProfile } from "./local-agent-profiles.js";
 import type {
   LocalAgentDriver,
   LocalAgentRunInput,
+  LocalAgentRunControl,
   LocalAgentRunResult,
   LocalAgentRuntime,
   LocalAgentRuntimeContext,
@@ -56,6 +58,7 @@ class FakeRuntime implements LocalAgentRuntime {
   async run(
     input: LocalAgentRunInput,
     callbacks?: { onSessionId?: (id: string) => void | Promise<void> },
+    control?: LocalAgentRunControl,
   ): Promise<BetterResult<LocalAgentRunResult, AgentProviderError>> {
     this.inputs.push(input);
     if (input.prompt.includes("early-fail")) {
@@ -65,7 +68,20 @@ class FakeRuntime implements LocalAgentRuntime {
     if (input.prompt.includes("defect")) throw new TypeError("internal defect");
     if (input.prompt.includes("fail")) return Result.err(providerFailure("provider failed"));
     if (input.prompt.includes("hold")) {
-      await new Promise<void>((resolve) => { this.releaseHold = resolve; });
+      const held = new Promise<void>((resolve) => { this.releaseHold = resolve; });
+      control?.registerCancelHandler(() => {
+        this.release();
+      });
+      await held;
+      if (control?.signal.aborted) {
+        return Result.err(new AgentProviderCancelledError({
+          code: "PROVIDER_CANCELLED",
+          provider: "codex",
+          operation: "run",
+          retryable: false,
+          message: "Codex agent turn was cancelled.",
+        }));
+      }
     }
     return Result.ok({
       provider: this.provider,
@@ -256,6 +272,24 @@ await waitFor(() => getRecord(first.id).status === "idle");
 assert.equal(getRecord(first.id).model, "gpt-run");
 assert.equal(getRecord(first.id).effort, "high");
 
+const cancellable = unwrap(await manager.start({
+  target: "reviewer",
+  prompt: "hold for cancellation",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+}));
+await waitFor(() => runtimes.get(cancellable.id)?.inputs.length === 1);
+const cancelled = unwrap(await manager.cancel(cancellable.id, scope));
+assert.equal(cancelled.status, "stopped");
+assert.equal(cancelled.errorCode, "PROVIDER_CANCELLED");
+assert.equal(cancelled.errorRetryable, false);
+assert.equal(runtimes.get(cancellable.id)?.closed, false, "per-turn cancellation must keep the runtime alive");
+const resumedAfterCancel = unwrap(await manager.continue(cancellable.id, "resume after cancel", {}, scope));
+assert.equal(resumedAfterCancel.status, "running");
+await waitFor(() => getRecord(cancellable.id).status === "idle");
+const completedCancel = unwrap(await manager.cancel(cancellable.id, scope));
+assert.equal(completedCancel.status, "idle", "cancelling a completed task is idempotent");
+
 const second = unwrap(await manager.start({
   target: "reviewer",
   prompt: "second agent",
@@ -264,7 +298,11 @@ const second = unwrap(await manager.start({
 }));
 await waitFor(() => getRecord(second.id).status === "idle");
 assert.notEqual(first.id, second.id);
-assert.equal(runtimes.size, 2, "different agents receive independent logical runtimes");
+assert.notEqual(
+  runtimes.get(first.id),
+  runtimes.get(second.id),
+  "different agents receive independent logical runtimes",
+);
 
 const rawCodex = unwrap(await manager.start({
   target: "codex",

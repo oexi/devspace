@@ -14,6 +14,7 @@ export type LocalAgentDaemonMethod =
   | "hello"
   | "agent.start"
   | "agent.continue"
+  | "agent.cancel"
   | "agent.get"
   | "agent.list"
   | "daemon.status"
@@ -24,6 +25,7 @@ export type LocalAgentDaemonRequest =
   | AgentDaemonRequestBase<"hello", Record<string, never>>
   | AgentDaemonRequestBase<"agent.start", StartLocalAgentInput>
   | AgentDaemonRequestBase<"agent.continue", { id: string; prompt: string; scope: LocalAgentWorkspaceScope; overrides?: RunOverrides }>
+  | AgentDaemonRequestBase<"agent.cancel", { id: string; scope: LocalAgentWorkspaceScope }>
   | AgentDaemonRequestBase<"agent.get", { id: string; scope: LocalAgentWorkspaceScope }>
   | AgentDaemonRequestBase<"agent.list", LocalAgentWorkspaceScope>
   | AgentDaemonRequestBase<"daemon.status", Record<string, never>>
@@ -113,6 +115,17 @@ export function decodeLocalAgentDaemonRequest(value: unknown): LocalAgentDaemonR
         authToken,
         method,
         params: decodeContinueInput(params),
+      } as LocalAgentDaemonRequest;
+    case "agent.cancel":
+      return {
+        requestId,
+        protocolVersion,
+        method,
+        authToken,
+        params: {
+          id: requiredString(asRecord(params)?.id, "id"),
+          scope: decodeWorkspaceScope(asRecord(params)?.scope),
+        },
       } as LocalAgentDaemonRequest;
     case "agent.get":
       return {

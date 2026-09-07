@@ -242,7 +242,7 @@ When Subagents are enabled, DevSpace loads agent profiles from
 compact profile catalog through `open_workspace`. The bundled
 `subagents` skill keeps the model-facing workflow to
 `devspace agents targets`, `devspace agents ls`, `devspace agents run`,
-`devspace agents continue`, and `devspace agents show`.
+`devspace agents continue`, `devspace agents cancel`, and `devspace agents show`.
 Those commands automatically manage the internal local agent daemon; `devspace
 serve` is not a prerequisite.
 `devspace agents ls` lists existing subagent sessions, not profile

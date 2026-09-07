@@ -11,9 +11,11 @@ import {
   selectAcpPermissionOption,
 } from "./local-agent-acp.js";
 import { GrokPromptCompletionRegistry } from "./local-agent-grok.js";
+import type { LocalAgentRunControl } from "./local-agent-runtime.js";
 
 const requests: Array<{ method: string; params?: unknown }> = [];
 const queues = new Map<string, { values: unknown[] }>();
+let releaseHeldPrompt: (() => void) | undefined;
 const connection = {
   agent: {
     async request(method: string, params?: unknown): Promise<unknown> {
@@ -36,6 +38,15 @@ const connection = {
         return { sessionId };
       }
       if (method === "session/prompt") {
+        const promptText = ((params as { prompt?: Array<{ text?: string }> })?.prompt?.[0]?.text) ?? "";
+        if (promptText === "hold") {
+          return await new Promise<unknown>((resolve) => {
+            releaseHeldPrompt = () => {
+              releaseHeldPrompt = undefined;
+              resolve({ stopReason: "cancelled" });
+            };
+          });
+        }
         const queue = queues.get(input?.sessionId ?? "");
         queue?.values.push({
           update: {
@@ -46,6 +57,10 @@ const connection = {
         return { stopReason: "end_turn" };
       }
       return {};
+    },
+    async cancel(params: { sessionId: string }): Promise<void> {
+      requests.push({ method: "session/cancel", params });
+      releaseHeldPrompt?.();
     },
   },
   close() {},
@@ -98,6 +113,21 @@ assert.equal(
   Object.hasOwn(requests.find(({ method }) => method === "session/new")?.params as object, "additionalDirectories"),
   false,
 );
+
+const cancellation = createRunControl();
+const pendingCancellation = runtime.run({
+  prompt: "hold",
+  workspaceRoot: "/tmp/project",
+  providerSessionId: first.providerSessionId ?? undefined,
+  writeMode: "allowed",
+}, undefined, cancellation.control);
+await waitFor(() => cancellation.hasHandler() && releaseHeldPrompt !== undefined);
+await cancellation.cancel();
+const cancelledTurn = await pendingCancellation;
+assert.equal(cancelledTurn.isErr(), true);
+if (cancelledTurn.isErr()) assert.equal(cancelledTurn.error.code, "PROVIDER_CANCELLED");
+assert.equal(requests.filter(({ method }) => method === "session/cancel").length, 1);
+assert.equal(runtime.isAlive(), true, "ACP session cancellation keeps the shared runtime alive");
 
 await runtime.releaseSession("cursor_session_1");
 assert.equal(queues.has("cursor_session_1"), false);
@@ -157,6 +187,34 @@ assert.equal(
   "session close support must not depend on resume support",
 );
 await closeOnlyRuntime.close();
+
+function createRunControl(): {
+  control: LocalAgentRunControl;
+  cancel: () => Promise<void>;
+  hasHandler: () => boolean;
+} {
+  const controller = new AbortController();
+  let handler: (() => void | Promise<void>) | undefined;
+  return {
+    control: {
+      signal: controller.signal,
+      registerCancelHandler(next) { handler = next; },
+    },
+    cancel: async () => {
+      controller.abort(new DOMException("cancelled", "AbortError"));
+      await handler?.();
+    },
+    hasHandler: () => handler !== undefined,
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for condition.");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 assert.deepEqual(
   selectAcpPermissionOption([

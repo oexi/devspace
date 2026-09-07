@@ -30,11 +30,12 @@ devspace agents run <profile-or-provider> --model <model> --effort <effort> "<br
 
 The result contains a DevSpace agent `id` and its current status. Execution continues independently, so retain the ID for later inspection or follow-up.
 
-## Inspect and continue
+## Inspect, continue, and cancel
 
 ```bash
 devspace agents show <id> --json
 devspace agents continue <id> "<follow-up brief>" --json
+devspace agents cancel <id> --json
 devspace agents ls --json
 ```
 
@@ -42,12 +43,17 @@ devspace agents ls --json
   available response or error.
 - `continue` gives the same subagent another turn with its existing provider
   session and context.
+- `cancel` interrupts the current turn for only that logical subagent. It does
+  not shut down a provider runtime shared with other agents.
 - `ls` returns sessions belonging to the current project.
 
 Run `devspace agents show <id> --json` again later while the status is `running`.
 `completed` includes the response. `failed` includes a structured error, and
-`stopped` is terminal without a successful response. Continue an agent when its
-existing context is useful; start another agent for unrelated work.
+`stopped` is terminal for the current turn without a successful response. A
+cancelled `stopped` agent can be continued when its existing context is still
+useful; start another agent for unrelated work. Cancellation stops the agent
+turn but does not promise to terminate long-lived background processes the
+agent may have started.
 
 ## Good uses
 

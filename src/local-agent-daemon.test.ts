@@ -55,6 +55,19 @@ class FakeManager implements LocalAgentDaemonManager {
     return Result.ok({ ...record, status: "running" } as LocalAgentRecord);
   }
 
+  async cancel(
+    _agentId: string,
+    _scope: { workspaceId: string; workspaceRoot: string },
+  ) {
+    return Result.ok({
+      ...record,
+      status: "stopped",
+      error: "Subagent turn was cancelled.",
+      errorCode: "PROVIDER_CANCELLED",
+      errorRetryable: false,
+    } as LocalAgentRecord);
+  }
+
   get(_id: string, _scope: { workspaceId: string; workspaceRoot: string }) {
     return Result.ok(record);
   }
@@ -134,6 +147,7 @@ try {
   assert.equal(manager.lastInput?.prompt, "Review this");
   const recordScope = { workspaceId: record.workspaceId!, workspaceRoot: record.workspaceRoot };
   assert.equal(unwrap(await client.get(record.id, recordScope)).id, record.id);
+  assert.equal(unwrap(await client.cancel(record.id, recordScope)).status, "stopped");
   assert.equal(unwrap(await client.list(recordScope))[0]?.id, record.id);
   assert.equal(unwrap(await client.status()).state, "ready");
 
@@ -301,10 +315,10 @@ const upgradeClient = new LocalAgentClient({
   },
 });
 try {
-  assert.equal(unwrap(await upgradeClient.ensureReady()).protocolVersion, 3);
+  assert.equal(unwrap(await upgradeClient.ensureReady()).protocolVersion, 4);
   assert.equal(replacementSpawns, 1);
   assert.equal(spawnedBeforeLegacyLockReleased, false);
-  assert.deepEqual(legacyMethods.slice(0, 3), ["hello:3", "hello:1", "daemon.stop:1"]);
+  assert.deepEqual(legacyMethods.slice(0, 3), ["hello:4", "hello:1", "daemon.stop:1"]);
 } finally {
   legacyLock.release();
   await replacementDaemon.close();
@@ -397,11 +411,11 @@ const timeoutServer = createNetServer((socket) => {
     if (request.method !== "hello") return;
     socket.end(encodeLocalAgentDaemonResponse({
       requestId: request.requestId,
-      protocolVersion: 3,
+      protocolVersion: 4,
       ok: true,
       result: {
         state: "ready",
-        protocolVersion: 3,
+        protocolVersion: 4,
         pid: process.pid,
         endpoint: timeoutPaths.endpoint,
         startedAt: "now",
@@ -443,7 +457,7 @@ const invalidServer = createNetServer((socket) => {
     if (!buffer.includes("\n")) return;
     socket.end(encodeLocalAgentDaemonResponse({
       requestId: "wrong_request_id",
-      protocolVersion: 3,
+      protocolVersion: 4,
       ok: true,
       result: {},
     }));
@@ -497,7 +511,7 @@ try {
 
   const unauthorized = await sendRawRequest(socketDaemon.paths.endpoint, JSON.stringify({
     requestId: "unauthorized",
-    protocolVersion: 3,
+    protocolVersion: 4,
     authToken: "wrong-secret",
     method: "hello",
     params: {},

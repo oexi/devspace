@@ -5,7 +5,7 @@ import {
   type ClaudeQueryLike,
   type ClaudeUserMessage,
 } from "./local-agent-claude.js";
-import type { LocalAgentRuntimeContext } from "./local-agent-runtime.js";
+import type { LocalAgentRunControl, LocalAgentRuntimeContext } from "./local-agent-runtime.js";
 
 class FakeClaudeQuery implements ClaudeQueryLike, AsyncIterator<unknown> {
   private readonly iterator: AsyncIterator<ClaudeUserMessage>;
@@ -13,6 +13,8 @@ class FakeClaudeQuery implements ClaudeQueryLike, AsyncIterator<unknown> {
   model?: string;
   permissionModes: string[] = [];
   flagSettings: Array<Record<string, unknown>> = [];
+  interruptCount = 0;
+  private interruptResolve?: () => void;
 
   constructor(prompt: AsyncIterable<ClaudeUserMessage>) {
     this.iterator = prompt[Symbol.asyncIterator]();
@@ -25,6 +27,10 @@ class FakeClaudeQuery implements ClaudeQueryLike, AsyncIterator<unknown> {
   async next(): Promise<IteratorResult<unknown>> {
     const next = await this.iterator.next();
     if (next.done) return { done: true, value: undefined };
+    if (next.value.message.content === "hold") {
+      await new Promise<void>((resolve) => { this.interruptResolve = resolve; });
+      this.interruptResolve = undefined;
+    }
     return {
       done: false,
       value: {
@@ -37,6 +43,11 @@ class FakeClaudeQuery implements ClaudeQueryLike, AsyncIterator<unknown> {
 
   close(): void {
     this.closeCount += 1;
+  }
+
+  async interrupt(): Promise<void> {
+    this.interruptCount += 1;
+    this.interruptResolve?.();
   }
 
   async setPermissionMode(mode: string): Promise<void> {
@@ -170,6 +181,20 @@ assert.equal(
   "bypassPermissions",
 );
 
+const cancellation = createRunControl();
+const pendingCancellation = runtime.run({
+  prompt: "hold",
+  workspaceRoot: "/tmp/project",
+  writeMode: "allowed",
+}, undefined, cancellation.control);
+await waitFor(() => cancellation.hasHandler());
+await cancellation.cancel();
+const cancelledTurn = await pendingCancellation;
+assert.equal(cancelledTurn.isErr(), true);
+if (cancelledTurn.isErr()) assert.equal(cancelledTurn.error.code, "PROVIDER_CANCELLED");
+assert.equal(query?.interruptCount, 1);
+assert.equal(runtime.isAlive(), true, "interrupting a Claude turn keeps the warm query reusable");
+
 await runtime.close();
 await runtime.close();
 assert.equal(query?.closeCount, 1);
@@ -210,6 +235,7 @@ const brokenStreamQuery: ClaudeQueryLike = {
     };
   },
   close() {},
+  async interrupt() {},
   async setPermissionMode() {},
   async applyFlagSettings() {},
 };
@@ -221,6 +247,34 @@ assert.equal(brokenStream.isErr(), true);
 if (brokenStream.isErr()) {
   assert.equal(brokenStream.error.code, "PROVIDER_UNAVAILABLE");
   assert.equal(brokenStream.error.retryable, true);
+}
+
+function createRunControl(): {
+  control: LocalAgentRunControl;
+  cancel: () => Promise<void>;
+  hasHandler: () => boolean;
+} {
+  const controller = new AbortController();
+  let handler: (() => void | Promise<void>) | undefined;
+  return {
+    control: {
+      signal: controller.signal,
+      registerCancelHandler(next) { handler = next; },
+    },
+    cancel: async () => {
+      controller.abort(new DOMException("cancelled", "AbortError"));
+      await handler?.();
+    },
+    hasHandler: () => handler !== undefined,
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for condition.");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 await assert.rejects(

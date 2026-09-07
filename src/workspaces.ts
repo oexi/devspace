@@ -281,7 +281,7 @@ export class WorkspaceRegistry {
             }
           : undefined,
       ...this.loadSkillsForWorkspace(root),
-      agentProfiles: [],
+      agentProfiles: await loadLocalAgentProfiles(this.config, root),
       activatedSkillDirs: new Set(),
     };
     this.store?.touchSession(workspaceId);

@@ -33,6 +33,7 @@ import {
 } from "./local-agent-daemon-protocol.js";
 import type { Result } from "better-result";
 import type {
+  AgentCancelError,
   AgentContinueError,
   AgentListError,
   AgentLookupError,
@@ -51,6 +52,7 @@ const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 10_000;
 export interface LocalAgentDaemonManager {
   start(input: StartLocalAgentInput): Promise<Result<LocalAgentRecord, AgentStartError>>;
   continue(agentId: string, prompt: string, overrides: RunOverrides | undefined, scope: LocalAgentWorkspaceScope): Promise<Result<LocalAgentRecord, AgentContinueError>>;
+  cancel(agentId: string, scope: LocalAgentWorkspaceScope): Promise<Result<LocalAgentRecord, AgentCancelError>>;
   get(agentId: string, scope: LocalAgentWorkspaceScope): Result<LocalAgentRecord, AgentLookupError>;
   list(scope: LocalAgentWorkspaceScope): Result<LocalAgentRecord[], AgentListError>;
   evictIdle(now?: number): Promise<void>;
@@ -301,6 +303,11 @@ export class LocalAgentDaemon {
           request.params.id,
           request.params.prompt,
           request.params.overrides,
+          request.params.scope,
+        ));
+      case "agent.cancel":
+        return unwrapManagerResult(await this.manager.cancel(
+          request.params.id,
           request.params.scope,
         ));
       case "agent.get":

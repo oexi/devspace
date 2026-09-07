@@ -1,4 +1,5 @@
 import {
+  AgentProviderCancelledError,
   AgentProviderExecutionError,
   AgentProviderProtocolError,
   AgentProviderUnavailableError,
@@ -9,6 +10,7 @@ import type { LocalAgentProvider } from "./local-agent-profiles.js";
 import type {
   LocalAgentDriver,
   LocalAgentRunCallbacks,
+  LocalAgentRunControl,
   LocalAgentRunInput,
   LocalAgentRunResult,
   LocalAgentRuntime,
@@ -28,6 +30,7 @@ const CLAUDE_WORKSPACE_ALLOWED_TOOLS = [
 
 export interface ClaudeQueryLike extends AsyncIterable<unknown> {
   close(): void;
+  interrupt(): Promise<void>;
   setPermissionMode(mode: ClaudePermissionMode): Promise<void>;
   applyFlagSettings(settings: Record<string, unknown>): Promise<void>;
   setModel?(model?: string): Promise<void>;
@@ -92,7 +95,11 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
     this.iterator = query[Symbol.asyncIterator]();
   }
 
-  async run(input: LocalAgentRunInput, callbacks?: LocalAgentRunCallbacks) {
+  async run(
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+    control?: LocalAgentRunControl,
+  ) {
     return captureAgentProviderResult({
       provider: "claude",
       operation: "run",
@@ -117,11 +124,13 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
         await this.query.applyFlagSettings(flagSettings);
         await this.query.setPermissionMode(claudePermissionMode(input.writeMode));
         if (input.model && this.query.setModel) await this.query.setModel(input.model);
+        if (control?.signal.aborted) throw claudeCancelledError();
         this.inputQueue.push({
           type: "user",
           message: { role: "user", content: input.prompt },
           parent_tool_use_id: null,
         });
+        control?.registerCancelHandler(() => this.query.interrupt());
 
         const items: unknown[] = [];
         for (;;) {
@@ -129,6 +138,7 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
           try {
             next = await this.iterator.next();
           } catch (error) {
+            if (control?.signal.aborted) throw claudeCancelledError(error);
             this.alive = false;
             if (isProgrammerDefect(error)) throw error;
             throw new AgentProviderUnavailableError({
@@ -141,6 +151,7 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
             });
           }
           if (next.done) {
+            if (control?.signal.aborted) throw claudeCancelledError();
             this.alive = false;
             throw new AgentProviderProtocolError({
               code: "PROVIDER_PROTOCOL_ERROR",
@@ -153,6 +164,9 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
           const message = next.value;
           items.push(message);
           const record = asRecord(message);
+          if (control?.signal.aborted && record?.type === "result") {
+            throw claudeCancelledError(message);
+          }
           if (typeof record?.session_id === "string") {
             const previousSessionId = this.providerSessionId;
             this.providerSessionId = record.session_id;
@@ -209,6 +223,17 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
     this.inputQueue.close();
     this.query.close();
   }
+}
+
+function claudeCancelledError(cause?: unknown): AgentProviderCancelledError {
+  return new AgentProviderCancelledError({
+    code: "PROVIDER_CANCELLED",
+    provider: "claude",
+    operation: "run",
+    retryable: false,
+    ...(cause === undefined ? {} : { cause }),
+    message: "Claude agent turn was cancelled.",
+  });
 }
 
 export class ClaudeLocalAgentDriver implements LocalAgentDriver {

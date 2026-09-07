@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 import { delimiter, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import {
+  AgentProviderCancelledError,
   AgentProviderExecutionError,
   AgentProviderProtocolError,
   AgentProviderUnavailableError,
@@ -13,6 +14,7 @@ import { terminateProcessTree } from "./process-platform.js";
 import type {
   LocalAgentDriver,
   LocalAgentRunCallbacks,
+  LocalAgentRunControl,
   LocalAgentRunInput,
   LocalAgentRunResult,
   LocalAgentRuntime,
@@ -115,7 +117,11 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
     this.rpc.notify("initialized");
   }
 
-  async run(input: LocalAgentRunInput, callbacks?: LocalAgentRunCallbacks) {
+  async run(
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+    control?: LocalAgentRunControl,
+  ) {
     return captureAgentProviderResult({
       provider: this.provider,
       operation: "run",
@@ -146,7 +152,20 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
         }
 
         await callbacks?.onSessionId?.(threadId);
-        const completed = await this.rpc.runTurn(threadId, turnParams(input, threadId));
+        if (control?.signal.aborted) throw codexCancelledError();
+        const completed = await this.rpc.runTurn(
+          threadId,
+          turnParams(input, threadId),
+          (turnId) => {
+            control?.registerCancelHandler(async () => {
+              await this.rpc.request("turn/interrupt", { threadId, turnId });
+            });
+          },
+        );
+        const turnStatus = readString(asRecord(asRecord(completed.event.params)?.turn), "status");
+        if (turnStatus === "interrupted" || (control?.signal.aborted && turnStatus !== "completed")) {
+          throw codexCancelledError(completed.event.params);
+        }
         const parsed = parseCompletedTurn(completed.event.params, completed.items);
         if (parsed.failure) {
           throw new AgentProviderExecutionError({
@@ -359,7 +378,11 @@ class CodexAppServerRpc {
     this.write({ method, ...(params === undefined ? {} : { params }) });
   }
 
-  async runTurn(threadId: string, params: unknown): Promise<CodexTurnResult> {
+  async runTurn(
+    threadId: string,
+    params: unknown,
+    onTurnStarted?: (turnId: string) => void | Promise<void>,
+  ): Promise<CodexTurnResult> {
     if (this.fatalError) throw this.fatalError;
     if (this.turns.has(threadId)) throw new Error(`Codex thread ${threadId} already has an active turn.`);
     let resolveTurn!: (result: CodexTurnResult) => void;
@@ -378,6 +401,8 @@ class CodexAppServerRpc {
     try {
       const response = await this.request("turn/start", params);
       turn.turnId = readString(asRecord(response)?.turn, "id");
+      if (turn.completed) return { event: turn.completed, items: turn.items };
+      if (turn.turnId) await onTurnStarted?.(turn.turnId);
       if (turn.completed) return { event: turn.completed, items: turn.items };
       return await completion;
     } finally {
@@ -449,6 +474,17 @@ class CodexAppServerRpc {
     if (!turnId) return undefined;
     return Array.from(this.turns.values()).find((turn) => turn.turnId === turnId);
   }
+}
+
+function codexCancelledError(cause?: unknown): AgentProviderCancelledError {
+  return new AgentProviderCancelledError({
+    code: "PROVIDER_CANCELLED",
+    provider: "codex",
+    operation: "run",
+    retryable: false,
+    ...(cause === undefined ? {} : { cause }),
+    message: "Codex agent turn was cancelled.",
+  });
 }
 
 function threadParams(input: LocalAgentRunInput): Record<string, unknown> {

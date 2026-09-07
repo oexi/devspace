@@ -6,6 +6,7 @@ import {
   type BashToolInput,
   type EditToolInput,
   type EditToolDetails,
+  type ReadToolDetails,
   type ReadToolInput,
   type WriteToolInput,
   type AgentToolResult,
@@ -61,7 +62,10 @@ async function runTool<TInput, TDetails = unknown>(
   }
 }
 
-export async function readFileTool(input: ReadToolInput, context: ToolContext): Promise<ToolResponse> {
+export async function readFileTool(
+  input: ReadToolInput,
+  context: ToolContext,
+): Promise<ToolResponse<ReadToolDetails>> {
   const path = await resolveConfinedPath(
     resolve(context.cwd, input.path),
     context.readRoots ?? [context.root],

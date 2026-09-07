@@ -33,6 +33,18 @@ export interface LocalAgentRunCallbacks {
   onSessionId?: (providerSessionId: string) => void | Promise<void>;
 }
 
+/**
+ * Per-turn cancellation control owned by the local-agent manager.
+ *
+ * Shared provider runtimes must translate this signal into the provider's
+ * native per-session/per-turn interrupt primitive instead of closing the
+ * whole runtime.
+ */
+export interface LocalAgentRunControl {
+  signal: AbortSignal;
+  registerCancelHandler(handler: () => void | Promise<void>): void;
+}
+
 export interface LocalAgentRuntimeContext {
   agentId: string;
   provider: LocalAgentProvider;
@@ -54,6 +66,7 @@ export interface LocalAgentRuntime {
   run(
     input: LocalAgentRunInput,
     callbacks?: LocalAgentRunCallbacks,
+    control?: LocalAgentRunControl,
   ): Promise<Result<LocalAgentRunResult, AgentProviderError>>;
   releaseSession(providerSessionId: string): Promise<void>;
   close(): Promise<void>;
