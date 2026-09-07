@@ -12,6 +12,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   loadSkills,
+  loadSkillsFromDir,
   type Skill,
   type LoadSkillsResult,
 } from "@earendil-works/pi-coding-agent";
@@ -110,11 +111,10 @@ export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSk
   const withoutSubagents = withoutSubagentsSkill(result);
   if (!config.subagents.enabled) return withoutSubagents;
 
-  const managed = loadSkills({
-    cwd,
-    agentDir: config.agentDir,
-    skillPaths: [config.devspaceSkillsDir],
-    includeDefaults: false,
+  const managedDir = dirname(join(config.devspaceSkillsDir, SUBAGENTS_SKILL));
+  const managed = loadSkillsFromDir({
+    dir: managedDir,
+    source: "devspace",
   }).skills.find((skill) => skill.name === SUBAGENTS_SKILL_NAME);
   if (!managed) {
     throw new Error("Managed subagents skill could not be loaded.");
