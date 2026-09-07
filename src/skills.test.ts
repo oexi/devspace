@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -198,17 +198,34 @@ try {
     false,
   );
 
+  await mkdir(join(devspaceSkills, "subagents"), { recursive: true });
+  await writeFile(
+    join(devspaceSkills, "subagents", "SKILL.md"),
+    [
+      "---",
+      "name: subagents",
+      "description: stale user copy",
+      "---",
+      "",
+      "# Stale subagents skill",
+    ].join("\n"),
+  );
   const experimentalConfig = loadConfig(writeTestDevspaceConfig(configDir, {
     server: { port: 1 },
     workspaces: { allowedRoots: [projectRoot] },
     skills: { agentDir },
     subagents: { enabled: true, providers: [] },
   }));
+  const experimentalSkills = loadWorkspaceSkills(experimentalConfig, projectRoot).skills;
+  const managedSubagents = experimentalSkills.find((skill) => skill.name === "subagents");
+  assert.ok(managedSubagents);
   assert.equal(
-    loadWorkspaceSkills(experimentalConfig, projectRoot).skills.some(
-      (skill) => skill.name === "subagents",
-    ),
-    true,
+    managedSubagents.filePath,
+    join(devspaceSkills, "subagents", "SKILL.md"),
+  );
+  assert.match(
+    await readFile(join(devspaceSkills, "subagents", "SKILL.md"), "utf8"),
+    /# DevSpace subagents/,
   );
 
   const duplicateConfig = loadConfig(writeTestDevspaceConfig(configDir, {
