@@ -174,7 +174,7 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
             operation: "run",
             retryable: false,
             cause: completed.event.params,
-            message: "Codex agent turn failed.",
+            message: parsed.failure,
           });
         }
         if (!parsed.finalResponse.trim()) {

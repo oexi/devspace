@@ -20,6 +20,7 @@ import {
   logToolCall,
   resultOutputSchema,
   textBlock,
+  workspaceAppDescriptorMeta,
 } from "./tool-surfaces/shared.js";
 import {
   SHELL_TOOL_ANNOTATIONS,
@@ -137,6 +138,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
         yieldTimeMs: waitInputSchema,
       },
       outputSchema,
+      ...workspaceAppDescriptorMeta(config),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, target: requestedTarget, instruction, yieldTimeMs }) => {
@@ -162,7 +164,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
           running: isTaskRunning(result),
         }),
       );
-      const response = taskToolResponse(record);
+      const response = taskToolResponse(record, RUN_TASK_TOOL_NAME);
       logToolCall(config, {
         tool: RUN_TASK_TOOL_NAME,
         workspaceId,
@@ -193,6 +195,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
         yieldTimeMs: waitInputSchema,
       },
       outputSchema,
+      ...workspaceAppDescriptorMeta(config),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, taskId, instruction, yieldTimeMs }) => {
@@ -213,7 +216,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
           running: isTaskRunning(result),
         }),
       );
-      const response = taskToolResponse(record);
+      const response = taskToolResponse(record, CONTINUE_TASK_TOOL_NAME);
       logToolCall(config, {
         tool: CONTINUE_TASK_TOOL_NAME,
         workspaceId,
@@ -238,6 +241,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
           .describe("Task identifier returned by run_task or continue_task."),
       },
       outputSchema: cancelOutputSchema,
+      ...workspaceAppDescriptorMeta(config),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, taskId }) => {
@@ -282,6 +286,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
         yieldTimeMs: waitInputSchema,
       },
       outputSchema,
+      ...workspaceAppDescriptorMeta(config),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, taskId, yieldTimeMs }) => {
@@ -300,7 +305,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
           running: isTaskRunning(result),
         }),
       );
-      const response = taskToolResponse(record);
+      const response = taskToolResponse(record, WAIT_TASK_TOOL_NAME);
       logToolCall(config, {
         tool: WAIT_TASK_TOOL_NAME,
         workspaceId,
@@ -467,7 +472,10 @@ function taskContinuationPrompt(instruction: string): string {
   ].join("\n");
 }
 
-function taskToolResponse(record: LocalAgentRecord) {
+function taskToolResponse(
+  record: LocalAgentRecord,
+  operation: typeof RUN_TASK_TOOL_NAME | typeof CONTINUE_TASK_TOOL_NAME | typeof WAIT_TASK_TOOL_NAME,
+) {
   const observation = presentAgentObservation(record);
   const result = observation.status === "running"
     ? `${record.id} running\n\nThe coding task is still running. Call ${WAIT_TASK_TOOL_NAME} with this taskId and the same workspaceId; do not poll it with low-level tools.`
@@ -476,6 +484,9 @@ function taskToolResponse(record: LocalAgentRecord) {
 
   return {
     content: [textBlock(result)],
+    _meta: {
+      card: { tool: "task", operation },
+    },
     structuredContent: {
       result,
       taskId: record.id,
@@ -502,6 +513,9 @@ function cancelTaskToolResponse(record: LocalAgentRecord, cancelRequested: boole
   const error = "error" in observation ? observation.error : undefined;
   return {
     content: [textBlock(result)],
+    _meta: {
+      card: { tool: "task", operation: CANCEL_TASK_TOOL_NAME },
+    },
     structuredContent: {
       result,
       taskId: record.id,

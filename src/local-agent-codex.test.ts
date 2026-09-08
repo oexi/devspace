@@ -151,6 +151,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       assert.equal(failed.error.code, "PROVIDER_EXECUTION_ERROR");
       assert.equal(failed.error.provider, "codex");
       assert.equal(failed.error.retryable, false);
+      assert.equal(failed.error.message, "fake failure");
     }
     const protocolFailure = await runtime.run({
       prompt: "empty",

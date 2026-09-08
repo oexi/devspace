@@ -17,7 +17,6 @@ interface PayloadRendererOptions {
   card: ToolResultCard;
   hostContext?: HostContext;
   errorMessage?: string | null;
-  visibleFileCount?: number;
 }
 
 interface MountedPayload {
@@ -46,15 +45,14 @@ function ReviewPayload({
   card,
   hostContext,
   errorMessage = null,
-  visibleFileCount,
 }: PayloadRendererOptions) {
   const patch = card.payload?.patch;
   const themeType: ThemeType = hostContext?.theme === "light" ? "light" : "dark";
   const files = useMemo(() => parseFiles(patch), [patch]);
-  const visibleFiles = typeof visibleFileCount === "number"
-    ? files.slice(0, visibleFileCount)
-    : files;
   const [openFiles, setOpenFiles] = useState(() => new Set<string>());
+  const [showAllFiles, setShowAllFiles] = useState(false);
+  const visibleFiles = showAllFiles ? files : files.slice(0, 3);
+  const hiddenCount = Math.max(0, files.length - visibleFiles.length);
 
   if (errorMessage) return <StatusLine message={errorMessage} tone="error" />;
   if (!patch) return <StatusLine message="Diff payload is not available." />;
@@ -75,8 +73,9 @@ function ReviewPayload({
   }
 
   return (
-    <div className="review-diff pretty-scrollbar">
-      <div className="review-diff-files">
+    <>
+      <div className="review-diff pretty-scrollbar">
+        <div className="review-diff-files">
         {visibleFiles.map((fileDiff, index) => {
           const key = fileDiff.cacheKey ?? `${fileDiff.prevName ?? ""}->${fileDiff.name}-${index}`;
           const stats = diffStats(fileDiff);
@@ -155,9 +154,19 @@ function ReviewPayload({
               ) : null}
             </div>
           );
-        })}
+          })}
+        </div>
       </div>
-    </div>
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          className="review-more"
+          onClick={() => setShowAllFiles(true)}
+        >
+          Show {hiddenCount} more {hiddenCount === 1 ? "file" : "files"}
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -219,5 +228,13 @@ function StatusLine({
   message: string;
   tone?: "muted" | "error";
 }) {
-  return <div className={`status ${tone}`}>{message}</div>;
+  return (
+    <div
+      className={`status ${tone}`}
+      role={tone === "error" ? "alert" : "status"}
+      aria-live={tone === "error" ? "assertive" : "polite"}
+    >
+      {message}
+    </div>
+  );
 }

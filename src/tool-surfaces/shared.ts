@@ -20,14 +20,17 @@ export function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   };
 }
 
-export function workspaceAppDescriptorMeta(config: ServerConfig): ToolWidgetDescriptorMeta {
+export function workspaceAppDescriptorMeta(
+  config: ServerConfig,
+  visibility: Array<"model" | "app"> = ["model"],
+): ToolWidgetDescriptorMeta {
   if (!config.uiEnabled) return { _meta: {} };
 
   return {
     _meta: {
       ui: {
         resourceUri: WORKSPACE_APP_URI,
-        visibility: ["model"],
+        visibility,
       },
     },
   };

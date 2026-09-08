@@ -326,9 +326,9 @@ function workspaceAppHtml(config: ServerConfig): string {
 ${stylesheets}
   </head>
   <body>
-    <main id="app" class="shell">
-      <section class="empty">Waiting for a tool result.</section>
-    </main>
+    <div id="app" class="shell">
+      <section class="empty-state">Waiting for a tool result.</section>
+    </div>
   </body>
 </html>`;
 }
@@ -384,10 +384,10 @@ export function registerMcpSurface(
 
   registerAppResource(
     registrationTarget,
-    "DevSpace Diff Card",
+    "DevSpace Tool Cards",
     WORKSPACE_APP_URI,
     {
-      description: "Interactive card for viewing DevSpace file diffs.",
+      description: "Interactive cards for DevSpace workspace, task, and change-review results.",
       _meta: {
         ui: {
           csp: appCsp(config),
@@ -587,7 +587,6 @@ export function registerMcpSurface(
             agentProviders: cardAgentProviders,
             agents: cardAgents,
             review,
-            instruction: cardInstruction,
             summary: {
               mode: workspace.mode,
               agentsFiles: cardAgentsFiles.length,
@@ -764,7 +763,7 @@ export function registerMcpSurface(
         workspaceId: z.string(),
         reviewRef: z.string().regex(/^[0-9a-f]{40,64}$/),
       }),
-      ...workspaceAppDescriptorMeta(config),
+      ...workspaceAppDescriptorMeta(config, ["model", "app"]),
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId }, { _meta }) => {

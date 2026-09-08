@@ -53,6 +53,28 @@ test("review results use rich metadata when the host provides it", () => {
   assert.equal(decoded.card.payload?.patch, "diff --git ...");
 });
 
+test("task results render as task cards when the tool carries the DevSpace app", () => {
+  const decoded = decodeToolResult({
+    content: [],
+    structuredContent: {
+      result: "agt_1 completed\n\nDone.",
+      taskId: "agt_1",
+      status: "completed",
+      target: "codex",
+    },
+    _meta: {
+      card: { tool: "task", operation: "run_task" },
+    },
+  });
+
+  assert.equal(decoded.kind, "card");
+  if (decoded.kind !== "card") return;
+  assert.equal(decoded.card.tool, "task");
+  assert.equal(decoded.card.task?.taskId, "agt_1");
+  assert.equal(decoded.card.task?.status, "completed");
+  assert.equal(decoded.card.task?.operation, "run_task");
+});
+
 test("review structured content becomes a reload reference when metadata is missing", () => {
   const decoded = decodeToolResult({
     content: [],

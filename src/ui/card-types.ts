@@ -1,6 +1,6 @@
 import type { App } from "@modelcontextprotocol/ext-apps";
 
-export type ToolName = "open_workspace" | "show_changes";
+export type ToolName = "open_workspace" | "show_changes" | "task";
 export type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
 
 export type ReviewFileType =
@@ -65,6 +65,21 @@ export interface ToolResultCard {
     effort?: string;
   }>;
   instruction?: string;
+  task?: {
+    operation: "run_task" | "continue_task" | "wait_task" | "cancel_task";
+    taskId: string;
+    status: "running" | "completed" | "failed" | "stopped";
+    target: string;
+    result?: string;
+    error?: {
+      code: string;
+      message: string;
+      retryable: boolean;
+    };
+    nextAction?: string;
+    cancelRequested?: boolean;
+    cancelAcknowledged?: boolean;
+  };
 }
 
 export function summaryNumber(
@@ -80,6 +95,10 @@ export function isExpandableCard(card: ToolResultCard): boolean {
     return Boolean(card.files?.length || card.payload?.patch);
   }
 
+  if (card.tool === "task") {
+    return Boolean(card.task?.result || card.task?.error || card.task?.nextAction);
+  }
+
   return (
     Number(card.summary?.agentsFiles ?? 0) > 0 ||
     Number(card.summary?.skills ?? 0) > 0 ||
@@ -91,11 +110,13 @@ export function isExpandableCard(card: ToolResultCard): boolean {
     Boolean(card.agentProviders?.length) ||
     Boolean(card.agents?.length) ||
     Boolean(card.worktree) ||
-    Boolean(card.instruction) ||
     card.review?.available === false
   );
 }
 
 export function isInitiallyExpandedCard(card: ToolResultCard): boolean {
-  return isExpandableCard(card);
+  if (!isExpandableCard(card)) return false;
+  if (card.tool === "show_changes") return true;
+  if (card.tool === "task") return card.task?.status === "failed";
+  return card.review?.available === false || card.worktree?.dirtySource === true;
 }

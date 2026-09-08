@@ -62,7 +62,7 @@ export interface DiffStats {
 export interface ToolDefinitionMeta extends Record<string, unknown> {
   ui: {
     resourceUri: string;
-    visibility: ["model"];
+    visibility: Array<"model" | "app">;
   };
 }
 

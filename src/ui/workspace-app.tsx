@@ -34,7 +34,7 @@ interface CardDisplay {
   icon: ToolIcon;
   title: string;
   label?: string;
-  tone: "workspace" | "review";
+  tone: "workspace" | "review" | "task";
 }
 
 interface MountedPayload {
@@ -53,10 +53,10 @@ let connectionError: string | null = null;
 let hostContext: HostContext | undefined;
 let card: ToolResultCard | null = null;
 let expanded = false;
-let reviewFilesExpanded = false;
 let errorMessage: string | null = null;
 let currentPayload: MountedPayload | null = null;
 let currentPayloadContainer: HTMLElement | null = null;
+let payloadMountRequestId = 0;
 let openWorkspaceInstructionKey: string | null = null;
 let showAvailableWorkspaceInstructions = false;
 let pendingToolResult: CallToolResult | null = null;
@@ -175,7 +175,6 @@ function setCard(nextCard: ToolResultCard): void {
   pendingReviewKey = null;
   card = nextCard;
   expanded = isInitiallyExpandedCard(nextCard);
-  reviewFilesExpanded = false;
   openWorkspaceInstructionKey = null;
   showAvailableWorkspaceInstructions = false;
   errorMessage = null;
@@ -192,7 +191,6 @@ function clearCard(message: string): void {
 
 function resetCardInteractions(): void {
   expanded = false;
-  reviewFilesExpanded = false;
   openWorkspaceInstructionKey = null;
   showAvailableWorkspaceInstructions = false;
 }
@@ -233,6 +231,20 @@ function applyHostContext(): void {
   }
   if (hostContext?.styles?.css?.fonts) {
     applyHostFonts(hostContext.styles.css.fonts);
+  }
+
+  const dimensions = hostContext?.containerDimensions;
+  const containerHeight = dimensions && "height" in dimensions
+    ? dimensions.height
+    : dimensions?.maxHeight;
+  if (typeof containerHeight === "number" && Number.isFinite(containerHeight)) {
+    const availableHeight = Math.max(160, Math.floor(containerHeight - 80));
+    document.documentElement.style.setProperty(
+      "--devspace-content-max-height",
+      `${availableHeight}px`,
+    );
+  } else {
+    document.documentElement.style.removeProperty("--devspace-content-max-height");
   }
 
   const insets = hostContext?.safeAreaInsets;
@@ -319,7 +331,10 @@ function render(): void {
 
 function renderEmpty(message: string, tone: "muted" | "error" = "muted"): void {
   const main = element("main", { className: "shell" });
-  main.append(element("section", { className: `empty ${tone}`, text: message }));
+  const section = element("section", { className: `empty-state ${tone}`, text: message });
+  section.setAttribute("role", tone === "error" ? "alert" : "status");
+  section.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+  main.append(section);
   appRoot.replaceChildren(main);
 }
 
@@ -338,28 +353,30 @@ async function renderPayloadIfNeeded(): Promise<void> {
     return;
   }
 
-  const visibleFileCount = !reviewFilesExpanded
-    ? Math.max(3, (card.files ?? []).slice(0, 3).length)
-    : undefined;
-
-  if (currentPayload) {
-    currentPayload.update({ card, hostContext, errorMessage, visibleFileCount });
+  if (card.tool === "task") {
+    renderTaskPayload(target, card);
     return;
   }
 
+  if (currentPayload) {
+    currentPayload.update({ card, hostContext, errorMessage });
+    return;
+  }
+
+  const requestId = ++payloadMountRequestId;
   renderStatus(target, "Loading review...");
   const { mountReviewPayload } = await import("./review-payload.js");
-  if (target !== currentPayloadContainer || !card) return;
+  if (requestId !== payloadMountRequestId || target !== currentPayloadContainer || !card) return;
 
   currentPayload = mountReviewPayload(target, {
     card,
     hostContext,
     errorMessage,
-    visibleFileCount,
   });
 }
 
 function unmountPayload(): void {
+  payloadMountRequestId += 1;
   unmountCurrentPayload();
   currentPayload = null;
   currentPayloadContainer = null;
@@ -376,7 +393,10 @@ function renderStatus(
   tone: "muted" | "error" = "muted",
 ): void {
   unmountCurrentPayload();
-  container.replaceChildren(element("div", { className: `status ${tone}`, text: message }));
+  const status = element("div", { className: `status ${tone}`, text: message });
+  status.setAttribute("role", tone === "error" ? "alert" : "status");
+  status.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+  container.replaceChildren(status);
 }
 
 function renderHeaderSummary(card: ToolResultCard): HTMLElement {
@@ -396,12 +416,30 @@ function renderHeaderSummary(card: ToolResultCard): HTMLElement {
     return stats;
   }
 
+  if (card.tool === "task") {
+    const task = card.task;
+    const summary = element("span", { className: "task-summary" });
+    if (!task) return summary;
+    summary.append(
+      element("span", {
+        className: `task-state ${task.status}`,
+        text: taskStatusLabel(task.status),
+      }),
+      element("span", {
+        className: "task-target",
+        text: task.target,
+        title: task.target,
+      }),
+    );
+    return summary;
+  }
+
   const parts = [
     countLabel(summaryNumber(card.summary, "agentsFiles"), "instruction"),
     countLabel(summaryNumber(card.summary, "skills"), "skill"),
   ].filter((part): part is string => Boolean(part));
   const meta = element("span", {
-    className: `header-meta ${parts.length === 0 ? "empty" : ""}`,
+    className: `header-meta ${parts.length === 0 ? "is-empty" : ""}`,
     text: parts.join(" · "),
   });
   if (parts.length === 0) meta.setAttribute("aria-hidden", "true");
@@ -411,9 +449,6 @@ function renderHeaderSummary(card: ToolResultCard): HTMLElement {
 function renderReviewCard(card: ToolResultCard, display: CardDisplay): void {
   unmountPayload();
 
-  const files = card.files ?? [];
-  const visibleFiles = reviewFilesExpanded ? files : files.slice(0, 3);
-  const hiddenCount = Math.max(0, files.length - visibleFiles.length);
   const expandable = isExpandableCard(card);
   const main = element("main", { className: "shell" });
   const section = element("section", { className: toolCardClassName(display) });
@@ -457,19 +492,6 @@ function renderReviewCard(card: ToolResultCard, display: CardDisplay): void {
     currentPayloadContainer = payload;
     body.append(payload);
 
-    if (hiddenCount > 0) {
-      const showMore = element("button", {
-        className: "review-more",
-        type: "button",
-        text: `Show ${hiddenCount} more ${hiddenCount === 1 ? "file" : "files"}`,
-      });
-      showMore.addEventListener("click", () => {
-        reviewFilesExpanded = true;
-        render();
-      });
-      body.append(showMore);
-    }
-
     section.append(body);
   }
 
@@ -510,6 +532,16 @@ function cardDisplay(card: ToolResultCard): CardDisplay {
     };
   }
 
+  if (card.tool === "task") {
+    const task = card.task;
+    return {
+      icon: toolIcons.agents,
+      title: task ? `Coding task ${taskStatusLabel(task.status).toLowerCase()}` : "Coding task",
+      label: task?.taskId,
+      tone: "task",
+    };
+  }
+
   const display = getPatchDisplayParts(card, { emptyTitle: "Changes ready" });
   return {
     icon: toolIcons.diff,
@@ -517,6 +549,15 @@ function cardDisplay(card: ToolResultCard): CardDisplay {
     label: singleFilePath(card),
     tone: "review",
   };
+}
+
+function taskStatusLabel(status: NonNullable<ToolResultCard["task"]>["status"]): string {
+  switch (status) {
+    case "running": return "Running";
+    case "completed": return "Completed";
+    case "failed": return "Failed";
+    case "stopped": return "Stopped";
+  }
 }
 
 function singleFilePath(card: ToolResultCard): string | undefined {
@@ -602,6 +643,7 @@ function renderWorkspacePayload(container: HTMLElement, card: ToolResultCard): v
   const agentChips: WorkspaceChip[] = agents.map((agent) => {
     const name = agent.name ?? "Unnamed agent";
     const providerName = agent.provider?.trim();
+    const label = [name, agent.model, agent.effort].filter(Boolean).join(" · ");
     const title = [
       agent.description,
       providerName ? `Provider: ${providerName}` : undefined,
@@ -609,7 +651,7 @@ function renderWorkspacePayload(container: HTMLElement, card: ToolResultCard): v
       agent.effort ? `Effort: ${agent.effort}` : undefined,
     ].filter((value): value is string => Boolean(value)).join("\n");
     return {
-      label: name,
+      label,
       logo: providerName
         ? getProviderLogo(providerName, providerLogoTheme)
         : undefined,
@@ -621,17 +663,17 @@ function renderWorkspacePayload(container: HTMLElement, card: ToolResultCard): v
   const providerChips: WorkspaceChip[] = providers.map((provider) => {
     const name = provider.id?.trim() || "Unknown provider";
     const logo = getProviderLogo(name, providerLogoTheme);
+    const label = [name, provider.model, provider.effort].filter(Boolean).join(" · ");
     const title = [
       provider.model ? `Model: ${provider.model}` : undefined,
       provider.effort ? `Effort: ${provider.effort}` : undefined,
       provider.note,
     ].filter((value): value is string => Boolean(value)).join("\n");
     return {
-      label: name,
+      label,
       logo,
       logoProvider: logo ? name : undefined,
-      bareLogo: Boolean(logo),
-      ariaLabel: name,
+      ariaLabel: title || label,
       title: title || name,
     };
   });
@@ -651,6 +693,73 @@ function renderWorkspacePayload(container: HTMLElement, card: ToolResultCard): v
   }
 
   container.replaceChildren(details);
+}
+
+function renderTaskPayload(container: HTMLElement, card: ToolResultCard): void {
+  unmountCurrentPayload();
+  const task = card.task;
+  const details = element("div", { className: "task-details" });
+
+  if (!task) {
+    details.append(element("div", { className: "status muted", text: "Task details are not available." }));
+    container.replaceChildren(details);
+    return;
+  }
+
+  const facts = element("div", { className: "task-facts" });
+  appendTaskFact(facts, "Operation", task.operation.replaceAll("_", " "));
+  appendTaskFact(facts, "Target", task.target, true);
+  appendTaskFact(facts, "Status", taskStatusLabel(task.status));
+
+  if (task.error) {
+    const error = element("div", { className: "task-error" });
+    error.setAttribute("role", "alert");
+    error.append(
+      element("div", { className: "task-error-code", text: task.error.code }),
+      element("div", { className: "task-error-message", text: task.error.message }),
+    );
+    details.append(error);
+  }
+
+  details.prepend(facts);
+
+  if (task.nextAction) {
+    const next = element("div", { className: "task-next" });
+    next.append(
+      element("div", { className: "task-section-label", text: "Next action" }),
+      element("div", { className: "task-next-text", text: task.nextAction }),
+    );
+    details.append(next);
+  }
+
+  if (task.result) {
+    const result = element("div", { className: "task-result-wrap" });
+    result.append(
+      element("div", { className: "task-section-label", text: "Result" }),
+      element("pre", { className: "task-result pretty-scrollbar", text: task.result }),
+    );
+    details.append(result);
+  }
+
+  container.replaceChildren(details);
+}
+
+function appendTaskFact(
+  container: HTMLElement,
+  label: string,
+  value: string,
+  mono = false,
+): void {
+  const fact = element("div", { className: "task-fact" });
+  fact.append(
+    element("span", { className: "task-fact-label", text: label }),
+    element("span", {
+      className: `task-fact-value${mono ? " mono" : ""}`,
+      text: value,
+      title: value,
+    }),
+  );
+  container.append(fact);
 }
 
 interface WorkspaceChip {
@@ -741,10 +850,10 @@ function appendWorkspaceInstructions(
 function renderWorkspaceInstructionList(
   instructions: WorkspaceInstruction[],
 ): HTMLElement {
-  const list = element("span", { className: "workspace-instruction-list" });
+  const list = element("div", { className: "workspace-instruction-list" });
 
   for (const instruction of instructions) {
-    const item = element("span", { className: "workspace-instruction-item" });
+    const item = element("div", { className: "workspace-instruction-item" });
     item.dataset.instructionKey = instruction.key;
     const hasContent = instruction.status === "loaded" && instruction.content !== undefined;
     const header = element(hasContent ? "button" : "span", {

@@ -61,7 +61,7 @@ test("tool modes expose the expected host-facing tool surface", async (t) => {
 
 test("enabled subagents expose bounded high-level task tools", async (t) => {
   const context = await fixture(t, {
-    uiEnabled: false,
+    uiEnabled: true,
     localAgentProviders: [{ name: "codex", available: true }],
   });
   const tools = await context.client.listTools();
@@ -93,6 +93,15 @@ test("enabled subagents expose bounded high-level task tools", async (t) => {
   assert.equal(runYieldSchema?.maximum, 110_000);
   assert.match(runYieldSchema?.description ?? "", /Defaults to 90000/);
   assert.equal(waitYieldSchema?.maximum, 110_000);
+
+  for (const name of ["run_task", "continue_task", "cancel_task", "wait_task"]) {
+    const tool = tools.tools.find((candidate) => candidate.name === name);
+    const ui = (tool?._meta as {
+      ui?: { resourceUri?: string; visibility?: string[] };
+    } | undefined)?.ui;
+    assert.equal(ui?.resourceUri, "ui://devspace/workspace-app.html");
+    assert.deepEqual(ui?.visibility, ["model"]);
+  }
 });
 
 test("both tool modes preserve nested instruction and skill guidance", async (t) => {
@@ -285,6 +294,18 @@ test("UI metadata is limited to workspace and aggregate review", async (t) => {
       assert.deepEqual(toolsWithUi, uiEnabled ? ["open_workspace", "show_changes"] : []);
     });
   }
+});
+
+test("review UI is callable from its app while workspace UI remains model-only", async (t) => {
+  const context = await fixture(t, { toolMode: "claude", uiEnabled: true });
+  const tools = await context.client.listTools();
+  const openWorkspace = tools.tools.find((tool) => tool.name === "open_workspace");
+  const showChanges = tools.tools.find((tool) => tool.name === "show_changes");
+  const openUi = (openWorkspace?._meta as { ui?: { visibility?: string[] } } | undefined)?.ui;
+  const reviewUi = (showChanges?._meta as { ui?: { visibility?: string[] } } | undefined)?.ui;
+
+  assert.deepEqual(openUi?.visibility, ["model"]);
+  assert.deepEqual(reviewUi?.visibility, ["model", "app"]);
 });
 
 test("open_workspace reports aggregate review availability", async (t) => {

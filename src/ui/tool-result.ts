@@ -13,9 +13,15 @@ export interface ChatGptToolGlobals {
 
 export function decodeToolResult(result: CallToolResult): DecodedToolResult {
   const structured = asRecord(result.structuredContent);
-  const metaCard = cardFields(asRecord(asRecord(result._meta)?.card));
+  const rawMetaCard = asRecord(asRecord(result._meta)?.card);
+  const metaCard = cardFields(rawMetaCard);
 
   if (structured) {
+    const task = taskFields(structured, rawMetaCard);
+    if (task) {
+      return { kind: "card", card: { tool: "task", task } };
+    }
+
     const workspaceId = stringField(structured.workspaceId);
     const reviewRef = stringField(structured.reviewRef);
     if (workspaceId && reviewRef) {
@@ -71,6 +77,56 @@ export function decodeToolResult(result: CallToolResult): DecodedToolResult {
   }
 
   return { kind: "invalid" };
+}
+
+function taskFields(
+  structured: Record<string, unknown>,
+  metaCard: Record<string, unknown> | undefined,
+): NonNullable<ToolResultCard["task"]> | undefined {
+  if (stringField(metaCard?.tool) !== "task") return undefined;
+  const operation = taskOperation(metaCard?.operation);
+  const taskId = stringField(structured.taskId);
+  const status = taskStatus(structured.status);
+  const target = stringField(structured.target);
+  if (!operation || !taskId || !status || !target) return undefined;
+
+  const errorRecord = asRecord(structured.error);
+  const errorCode = stringField(errorRecord?.code);
+  const errorMessage = stringField(errorRecord?.message);
+  const errorRetryable = booleanField(errorRecord?.retryable);
+  const error = errorCode && errorMessage && errorRetryable !== undefined
+    ? { code: errorCode, message: errorMessage, retryable: errorRetryable }
+    : undefined;
+
+  return definedFields({
+    operation,
+    taskId,
+    status,
+    target,
+    result: stringField(structured.result),
+    error,
+    nextAction: stringField(structured.nextAction),
+    cancelRequested: booleanField(structured.cancelRequested),
+    cancelAcknowledged: booleanField(structured.cancelAcknowledged),
+  }) as NonNullable<ToolResultCard["task"]>;
+}
+
+function taskOperation(value: unknown): NonNullable<ToolResultCard["task"]>["operation"] | undefined {
+  return value === "run_task"
+    || value === "continue_task"
+    || value === "wait_task"
+    || value === "cancel_task"
+    ? value
+    : undefined;
+}
+
+function taskStatus(value: unknown): NonNullable<ToolResultCard["task"]>["status"] | undefined {
+  return value === "running"
+    || value === "completed"
+    || value === "failed"
+    || value === "stopped"
+    ? value
+    : undefined;
 }
 
 function isCompleteReviewCard(
