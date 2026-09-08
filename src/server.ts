@@ -91,7 +91,11 @@ import {
   type ToolContent,
   type ToolSurface,
 } from "./tool-surfaces/types.js";
-import { WORKSPACE_APP_URI } from "./workspace-app-resource.js";
+import {
+  buildInlineWorkspaceAppHtml,
+  rewriteWorkspaceAppDynamicImports,
+  WORKSPACE_APP_URI,
+} from "./workspace-app-resource.js";
 
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 const DEVSPACE_VERSION = packageVersion();
@@ -169,6 +173,7 @@ interface WorkspaceAppManifestEntry {
   file: string;
   css?: string[];
   isEntry?: boolean;
+  isDynamicEntry?: boolean;
 }
 
 type WorkspaceAppManifest = Record<string, WorkspaceAppManifestEntry>;
@@ -302,35 +307,20 @@ function getWorkspaceAppManifestEntry(): WorkspaceAppManifestEntry {
   return entry;
 }
 
-function assetUrl(baseUrl: string, assetPath: string): string {
-  return `${baseUrl}/${assetPath.replace(/^\/+/, "")}`;
-}
-
 function workspaceAppHtml(config: ServerConfig): string {
   const baseUrl = assetBaseUrl(config);
+  const manifest = readWorkspaceAppManifest();
   const entry = getWorkspaceAppManifestEntry();
-  const stylesheets = (entry.css ?? [])
-    .map(
-      (stylesheet) =>
-        `    <link rel="stylesheet" crossorigin href="${assetUrl(baseUrl, stylesheet)}" />`,
-    )
-    .join("\n");
+  const entryScript = readFileSync(
+    new URL(`../dist/ui/${entry.file}`, import.meta.url),
+    "utf8",
+  );
+  const styles = (entry.css ?? []).map((stylesheet) =>
+    readFileSync(new URL(`../dist/ui/${stylesheet}`, import.meta.url), "utf8")
+  );
+  const script = rewriteWorkspaceAppDynamicImports(entryScript, manifest, baseUrl);
 
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DevSpace Workspace</title>
-    <script type="module" crossorigin src="${assetUrl(baseUrl, entry.file)}"></script>
-${stylesheets}
-  </head>
-  <body>
-    <div id="app" class="shell">
-      <section class="empty-state">Waiting for a tool result.</section>
-    </div>
-  </body>
-</html>`;
+  return buildInlineWorkspaceAppHtml({ script, styles });
 }
 
 function appCsp(config: ServerConfig): {
