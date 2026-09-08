@@ -1067,6 +1067,21 @@ test("ChatGPT pairing uses the production metadata resolver through authorizatio
   assert.equal(listed.status, 200, await listed.clone().text());
 });
 
+test("browser pairing rejects untrusted and malformed Origins", async (t) => {
+  const context = await httpServerFixture(t, "devspace-pairing-origin-test-");
+  for (const origin of ["https://untrusted.example", "null", "not-a-url"]) {
+    const response = await fetch(`${context.localBaseUrl}/authorize`, {
+      method: "POST",
+      headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ owner_token: context.ownerToken }),
+      redirect: "manual",
+    });
+    assert.equal(response.status, 403);
+    const body = await response.json() as { error: { message: string } };
+    assert.match(body.error.message, /Invalid Origin/);
+  }
+});
+
 test("invalid client metadata produces an OAuth error instead of an opaque pairing 500", async (t) => {
   mockClientMetadataEndpoint(t, { body: {
     ...chatGptClientMetadata,
@@ -1262,7 +1277,10 @@ function authorizeTestClient(input: {
   const challenge = createHash("sha256").update(input.verifier).digest("base64url");
   return fetch(`${input.localBaseUrl}/authorize`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: new URL(input.publicBaseUrl).origin,
+    },
     body: new URLSearchParams({
       client_id: input.clientId,
       redirect_uri: input.redirectUri,

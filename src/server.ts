@@ -859,6 +859,15 @@ export function createServer(
   const app = createMcpExpressApp({
     host: config.host,
     ...(allowedHosts ? { allowedHosts } : {}),
+    // Browser pairing forms use the public URL even when a tunnel forwards
+    // to a loopback listener. The SDK otherwise allows only local Origins.
+    allowedOrigins: Array.from(new Set([
+      "localhost",
+      "127.0.0.1",
+      "[::1]",
+      new URL(config.publicBaseUrl).hostname,
+      ...config.allowedHosts.filter((host) => host !== "*"),
+    ])),
   });
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
