@@ -26,6 +26,7 @@ import {
 } from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
+import { WORKSPACE_APP_URI } from "./workspace-app-resource.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 import { chatGptClientMetadata, mockClientMetadataEndpoint } from "./test-support/oauth-client-metadata.test.js";
 
@@ -99,8 +100,12 @@ test("enabled subagents expose bounded high-level task tools", async (t) => {
     const ui = (tool?._meta as {
       ui?: { resourceUri?: string; visibility?: string[] };
     } | undefined)?.ui;
-    assert.equal(ui?.resourceUri, "ui://devspace/workspace-app.html");
+    assert.equal(ui?.resourceUri, WORKSPACE_APP_URI);
     assert.deepEqual(ui?.visibility, ["model"]);
+    assert.equal(
+      (tool?._meta as { "openai/outputTemplate"?: string } | undefined)?.["openai/outputTemplate"],
+      WORKSPACE_APP_URI,
+    );
   }
 });
 

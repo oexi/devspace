@@ -4,8 +4,6 @@ import type { ServerConfig } from "../config.js";
 import type { ReviewCheckpointManager } from "../review-checkpoints.js";
 import type { WorkspaceRegistry } from "../workspaces.js";
 
-export const WORKSPACE_APP_URI = "ui://devspace/workspace-app.html";
-
 export const toolNames = {
   openWorkspace: "open_workspace",
   read: "read",
@@ -64,6 +62,7 @@ export interface ToolDefinitionMeta extends Record<string, unknown> {
     resourceUri: string;
     visibility: Array<"model" | "app">;
   };
+  "openai/outputTemplate"?: string;
 }
 
 export type EmptyToolDefinitionMeta = Record<string, unknown> & {

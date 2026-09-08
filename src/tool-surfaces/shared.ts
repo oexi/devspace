@@ -1,8 +1,8 @@
 import * as z from "zod/v4";
 import { logEvent, commandPreview } from "../logger.js";
 import type { ServerConfig } from "../config.js";
+import { WORKSPACE_APP_URI } from "../workspace-app-resource.js";
 import {
-  WORKSPACE_APP_URI,
   type DiffStats,
   type ToolContent,
   type ToolLogFields,
@@ -32,6 +32,7 @@ export function workspaceAppDescriptorMeta(
         resourceUri: WORKSPACE_APP_URI,
         visibility,
       },
+      "openai/outputTemplate": WORKSPACE_APP_URI,
     },
   };
 }

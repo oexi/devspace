@@ -86,12 +86,12 @@ import {
   workspaceAppDescriptorMeta,
 } from "./tool-surfaces/shared.js";
 import {
-  WORKSPACE_APP_URI,
   toolNames,
   workspaceIdDescription,
   type ToolContent,
   type ToolSurface,
 } from "./tool-surfaces/types.js";
+import { WORKSPACE_APP_URI } from "./workspace-app-resource.js";
 
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 const DEVSPACE_VERSION = packageVersion();
