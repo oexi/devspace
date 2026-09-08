@@ -25,7 +25,6 @@ import {
 } from "./patch-display.js";
 import {
   decodeToolResult,
-  toolResultFromMcpUiMessage,
   toolResultFromChatGptGlobals,
   type ChatGptToolGlobals,
 } from "./tool-result.js";
@@ -71,7 +70,6 @@ if (!maybeAppRoot) {
 
 const appRoot = maybeAppRoot;
 
-window.addEventListener("message", handleMcpBridgeMessage, { passive: true });
 window.addEventListener("openai:set_globals", handleChatGptGlobalsChanged, { passive: true });
 
 void boot();
@@ -111,7 +109,6 @@ async function boot(): Promise<void> {
   };
 
   app.onteardown = async () => {
-    window.removeEventListener("message", handleMcpBridgeMessage);
     window.removeEventListener("openai:set_globals", handleChatGptGlobalsChanged);
     unmountPayload();
     return {};
@@ -138,19 +135,7 @@ async function boot(): Promise<void> {
     await applyToolResult(initialResult);
   } else {
     render();
-    void recoverLateChatGptResult();
   }
-}
-
-function handleMcpBridgeMessage(event: MessageEvent): void {
-  if (event.source !== window.parent) return;
-  const result = toolResultFromMcpUiMessage(event.data);
-  if (!result) return;
-  if (!connected) {
-    pendingToolResult = result;
-    return;
-  }
-  void applyToolResult(result);
 }
 
 async function applyToolResult(result: CallToolResult): Promise<void> {
@@ -244,17 +229,6 @@ function handleChatGptGlobalsChanged(event: Event): void {
     return;
   }
   if (!card) void applyToolResult(restored);
-}
-
-async function recoverLateChatGptResult(): Promise<void> {
-  for (const delayMs of [50, 150, 300, 600, 1_000]) {
-    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-    if (card || errorMessage || !connected) return;
-    const restored = chatGptRestoredResult();
-    if (!restored) continue;
-    await applyToolResult(restored);
-    return;
-  }
 }
 
 function applyHostContext(): void {

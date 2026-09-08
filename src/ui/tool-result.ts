@@ -11,15 +11,6 @@ export interface ChatGptToolGlobals {
   toolResponseMetadata?: unknown;
 }
 
-export function toolResultFromMcpUiMessage(message: unknown): CallToolResult | undefined {
-  const record = asRecord(message);
-  if (!record || record.jsonrpc !== "2.0" || record.method !== "ui/notifications/tool-result") {
-    return undefined;
-  }
-  const params = asRecord(record.params);
-  return params ? params as CallToolResult : undefined;
-}
-
 export function decodeToolResult(result: CallToolResult): DecodedToolResult {
   const structured = asRecord(result.structuredContent);
   const rawMetaCard = asRecord(asRecord(result._meta)?.card);
