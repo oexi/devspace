@@ -3,6 +3,7 @@ import test from "node:test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import {
   decodeToolResult,
+  toolResultFromMcpUiMessage,
   toolResultFromChatGptGlobals,
 } from "./tool-result.js";
 
@@ -73,6 +74,44 @@ test("task results render as task cards when the tool carries the DevSpace app",
   assert.equal(decoded.card.task?.taskId, "agt_1");
   assert.equal(decoded.card.task?.status, "completed");
   assert.equal(decoded.card.task?.operation, "run_task");
+});
+
+test("task results can be rebuilt without result metadata", () => {
+  const decoded = decodeToolResult({
+    content: [],
+    structuredContent: {
+      operation: "run_task",
+      taskId: "agt_1",
+      status: "failed",
+      target: "codex",
+      result: "agt_1 failed",
+      error: {
+        code: "PROVIDER_EXECUTION_ERROR",
+        message: "provider failed",
+        retryable: false,
+      },
+    },
+  });
+
+  assert.equal(decoded.kind, "card");
+  if (decoded.kind !== "card") return;
+  assert.equal(decoded.card.tool, "task");
+  assert.equal(decoded.card.task?.operation, "run_task");
+  assert.equal(decoded.card.task?.error?.message, "provider failed");
+});
+
+test("raw MCP Apps tool-result notifications are recognized", () => {
+  const result = toolResultFromMcpUiMessage({
+    jsonrpc: "2.0",
+    method: "ui/notifications/tool-result",
+    params: {
+      content: [],
+      structuredContent: { workspaceId: "ws_1" },
+    },
+  });
+
+  assert.deepEqual(result?.structuredContent, { workspaceId: "ws_1" });
+  assert.equal(toolResultFromMcpUiMessage({ jsonrpc: "2.0", method: "other" }), undefined);
 });
 
 test("review structured content becomes a reload reference when metadata is missing", () => {

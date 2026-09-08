@@ -75,6 +75,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
 
   const client = options.client ?? createLocalAgentClient(config);
   const outputSchema = resultOutputSchema({
+    operation: z.enum([RUN_TASK_TOOL_NAME, CONTINUE_TASK_TOOL_NAME, WAIT_TASK_TOOL_NAME]),
     taskId: z.string(),
     status: z.enum(["running", "completed", "failed", "stopped"]),
     target: z.string(),
@@ -88,6 +89,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
     nextAction: z.string().optional(),
   });
   const cancelOutputSchema = resultOutputSchema({
+    operation: z.literal(CANCEL_TASK_TOOL_NAME),
     taskId: z.string(),
     status: z.enum(["running", "completed", "failed", "stopped"]),
     target: z.string(),
@@ -489,6 +491,7 @@ function taskToolResponse(
     },
     structuredContent: {
       result,
+      operation,
       taskId: record.id,
       status: observation.status,
       target: record.profileName,
@@ -518,6 +521,7 @@ function cancelTaskToolResponse(record: LocalAgentRecord, cancelRequested: boole
     },
     structuredContent: {
       result,
+      operation: CANCEL_TASK_TOOL_NAME,
       taskId: record.id,
       status: observation.status,
       target: record.profileName,
