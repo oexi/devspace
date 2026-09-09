@@ -1,6 +1,8 @@
 :root {
   color-scheme: light dark;
   font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
   background: transparent;
   color: var(--color-text-primary, #f5f5f6);
   --tool-card-border: color-mix(in srgb, var(--color-border-primary, #414141) 74%, transparent);
@@ -19,6 +21,8 @@
 
 html,
 body {
+  width: 100%;
+  max-width: 100%;
   margin: 0;
   background: transparent;
   overflow: hidden;
@@ -26,6 +30,8 @@ body {
 
 .shell {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   padding: 0;
   overflow: hidden;
 }
@@ -780,6 +786,9 @@ body {
 
 .review-diff {
   display: grid;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   max-height: min(520px, var(--devspace-content-max-height, 520px));
   overflow-x: hidden;
   overflow-y: auto;
@@ -787,11 +796,17 @@ body {
 
 .review-diff-files {
   display: grid;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   gap: 0;
   padding: 0;
 }
 
 .review-diff-file {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow: clip;
   border: 0;
   border-radius: 0;
@@ -852,6 +867,9 @@ body {
 }
 
 .review-single-file {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   max-height: min(520px, var(--devspace-content-max-height, 520px));
   overflow-x: hidden;
   overflow-y: auto;
@@ -926,9 +944,11 @@ body {
 }
 
 .review-code {
-  -webkit-text-size-adjust: 100%;
-  text-size-adjust: 100%;
   display: grid;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  contain: inline-size;
   overflow-x: auto;
   overflow-y: visible;
   background: var(--tool-payload-bg, var(--color-background-primary, #101114));
@@ -939,8 +959,9 @@ body {
 
 .review-code-line {
   display: grid;
-  grid-template-columns: 42px 42px 20px minmax(max-content, 1fr);
-  min-width: max-content;
+  grid-template-columns: 42px 42px 20px auto;
+  width: max-content;
+  min-width: 100%;
 }
 
 .review-code-line.context,
