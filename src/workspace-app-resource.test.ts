@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   buildInlineWorkspaceAppHtml,
-  rewriteWorkspaceAppDynamicImports,
   workspaceAppResourceUriForEntry,
 } from "./workspace-app-resource.js";
 
@@ -61,44 +60,3 @@ test("workspace app HTML inlines the entry bundle and stylesheet", () => {
   assert.match(html, /<\\\/style>/);
 });
 
-test("inline entry rewrites lazy chunks to absolute MCP asset URLs", () => {
-  const rewritten = rewriteWorkspaceAppDynamicImports(
-    "const load = () => import(`./review-payload-abc123.js`);",
-    {
-      "workspace-app.html": {
-        file: "assets/workspace-app-main.js",
-        isEntry: true,
-      },
-      "review-payload.tsx": {
-        file: "assets/review-payload-abc123.js",
-        isDynamicEntry: true,
-      },
-    },
-    "https://hermes.example.test/mcp-app-assets",
-  );
-
-  assert.equal(
-    rewritten,
-    "const load = () => import(`https://hermes.example.test/mcp-app-assets/assets/review-payload-abc123.js`);",
-  );
-
-  const redeployed = rewriteWorkspaceAppDynamicImports(
-    "const load = () => import(`./review-payload-abc123.js`);",
-    {
-      "workspace-app.html": {
-        file: "assets/workspace-app-main.js",
-        isEntry: true,
-      },
-      "review-payload.tsx": {
-        file: "assets/review-payload-abc123.js",
-        isDynamicEntry: true,
-      },
-    },
-    "https://devspace.example.com/mcp-app-assets",
-  );
-
-  assert.equal(
-    redeployed,
-    "const load = () => import(`https://devspace.example.com/mcp-app-assets/assets/review-payload-abc123.js`);",
-  );
-});

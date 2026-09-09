@@ -9,7 +9,6 @@ export interface WorkspaceAppManifestEntry {
   file: string;
   css?: string[];
   isEntry?: boolean;
-  isDynamicEntry?: boolean;
 }
 
 type WorkspaceAppManifest = Record<string, WorkspaceAppManifestEntry>;
@@ -45,24 +44,6 @@ function resolveWorkspaceAppResourceUri(): string {
 }
 
 export const WORKSPACE_APP_URI = resolveWorkspaceAppResourceUri();
-
-export function rewriteWorkspaceAppDynamicImports(
-  script: string,
-  manifest: WorkspaceAppManifest,
-  assetBaseUrl: string,
-): string {
-  let rewritten = script;
-  const baseUrl = assetBaseUrl.replace(/\/+$/, "");
-
-  for (const entry of Object.values(manifest)) {
-    if (!entry.isDynamicEntry || !entry.file) continue;
-    const filename = entry.file.split("/").at(-1);
-    if (!filename) continue;
-    rewritten = rewritten.replaceAll(`./${filename}`, `${baseUrl}/${entry.file}`);
-  }
-
-  return rewritten;
-}
 
 export function buildInlineWorkspaceAppHtml(input: {
   script: string;

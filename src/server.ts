@@ -93,7 +93,6 @@ import {
 } from "./tool-surfaces/types.js";
 import {
   buildInlineWorkspaceAppHtml,
-  rewriteWorkspaceAppDynamicImports,
   WORKSPACE_APP_URI,
 } from "./workspace-app-resource.js";
 
@@ -284,10 +283,6 @@ function requestLogFields(req: Request, config: ServerConfig): Record<string, un
   };
 }
 
-function assetBaseUrl(config: ServerConfig): string {
-  return `${config.publicBaseUrl.replace(/\/+$/, "")}/mcp-app-assets`;
-}
-
 function uiManifestUrl(): URL {
   return new URL("../dist/ui/.vite/manifest.json", import.meta.url);
 }
@@ -307,9 +302,7 @@ function getWorkspaceAppManifestEntry(): WorkspaceAppManifestEntry {
   return entry;
 }
 
-function workspaceAppHtml(config: ServerConfig): string {
-  const baseUrl = assetBaseUrl(config);
-  const manifest = readWorkspaceAppManifest();
+function workspaceAppHtml(): string {
   const entry = getWorkspaceAppManifestEntry();
   const entryScript = readFileSync(
     new URL(`../dist/ui/${entry.file}`, import.meta.url),
@@ -318,19 +311,16 @@ function workspaceAppHtml(config: ServerConfig): string {
   const styles = (entry.css ?? []).map((stylesheet) =>
     readFileSync(new URL(`../dist/ui/${stylesheet}`, import.meta.url), "utf8")
   );
-  const script = rewriteWorkspaceAppDynamicImports(entryScript, manifest, baseUrl);
-
-  return buildInlineWorkspaceAppHtml({ script, styles });
+  return buildInlineWorkspaceAppHtml({ script: entryScript, styles });
 }
 
-function appCsp(config: ServerConfig): {
+function appCsp(): {
   resourceDomains: string[];
   connectDomains: string[];
 } {
-  const publicBaseUrl = config.publicBaseUrl.replace(/\/+$/, "");
   return {
-    resourceDomains: [publicBaseUrl],
-    connectDomains: [publicBaseUrl],
+    resourceDomains: [],
+    connectDomains: [],
   };
 }
 
@@ -380,7 +370,7 @@ export function registerMcpSurface(
       description: "Interactive cards for DevSpace workspace, task, and change-review results.",
       _meta: {
         ui: {
-          csp: appCsp(config),
+          csp: appCsp(),
         },
       },
     },
@@ -391,10 +381,10 @@ export function registerMcpSurface(
           {
             uri: WORKSPACE_APP_URI,
             mimeType: RESOURCE_MIME_TYPE,
-            text: workspaceAppHtml(config),
+            text: workspaceAppHtml(),
             _meta: {
               ui: {
-                csp: appCsp(config),
+                csp: appCsp(),
               },
             },
           },

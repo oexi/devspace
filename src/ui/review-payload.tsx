@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { parsePatchFiles, type FileDiffMetadata, type FileDiffOptions } from "@pierre/diffs";
-import { FileDiff } from "@pierre/diffs/react";
+import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
 import type { HostContext, ToolResultCard } from "./card-types.js";
 import {
   fileChangeKindLabel,
@@ -9,9 +8,6 @@ import {
   getRenderedFileChangeKind,
   type FileChangeKind,
 } from "./patch-display.js";
-import { pierrePrettyScrollbarCss } from "./scrollbar.js";
-
-type ThemeType = "light" | "dark";
 
 interface PayloadRendererOptions {
   card: ToolResultCard;
@@ -43,11 +39,10 @@ export function mountReviewPayload(
 
 function ReviewPayload({
   card,
-  hostContext,
+  hostContext: _hostContext,
   errorMessage = null,
 }: PayloadRendererOptions) {
   const patch = card.payload?.patch;
-  const themeType: ThemeType = hostContext?.theme === "light" ? "light" : "dark";
   const files = useMemo(() => parseFiles(patch), [patch]);
   const [openFiles, setOpenFiles] = useState(() => new Set<string>());
   const [showAllFiles, setShowAllFiles] = useState(false);
@@ -58,16 +53,10 @@ function ReviewPayload({
   if (!patch) return <StatusLine message="Diff payload is not available." />;
   if (files.length === 0) return <StatusLine message="No diff hunks to review." />;
 
-  const options = diffOptions(themeType);
-
   if (files.length === 1) {
     return (
-      <div className="review-single-file">
-        <FileDiff
-          fileDiff={files[0]}
-          options={options}
-          className="pierre-diff pretty-scrollbar"
-        />
+      <div className="review-single-file pretty-scrollbar">
+        <ReviewFileBody fileDiff={files[0]} />
       </div>
     );
   }
@@ -146,11 +135,7 @@ function ReviewPayload({
                 </span>
               </button>
               {isOpen ? (
-                <FileDiff
-                  fileDiff={fileDiff}
-                  options={options}
-                  className="pierre-diff pretty-scrollbar"
-                />
+                <ReviewFileBody fileDiff={fileDiff} />
               ) : null}
             </div>
           );
@@ -168,6 +153,104 @@ function ReviewPayload({
       ) : null}
     </>
   );
+}
+
+interface ReviewLine {
+  kind: "context" | "addition" | "deletion" | "hunk";
+  oldLine?: number;
+  newLine?: number;
+  text: string;
+}
+
+function ReviewFileBody({ fileDiff }: { fileDiff: FileDiffMetadata }) {
+  const lines = useMemo(() => buildReviewLines(fileDiff), [fileDiff]);
+  if (lines.length === 0) {
+    return <StatusLine message="No textual diff is available for this file." />;
+  }
+
+  return (
+    <div className="review-code pretty-scrollbar" role="table" aria-label={`Diff for ${fileDiff.name}`}>
+      {lines.map((line, index) => (
+        <div
+          className={`review-code-line ${line.kind}`}
+          role="row"
+          key={`${line.kind}-${line.oldLine ?? ""}-${line.newLine ?? ""}-${index}`}
+        >
+          {line.kind === "hunk" ? (
+            <div className="review-code-hunk" role="cell">{line.text}</div>
+          ) : (
+            <>
+              <span className="review-code-number" role="cell">{line.oldLine ?? ""}</span>
+              <span className="review-code-number" role="cell">{line.newLine ?? ""}</span>
+              <span className="review-code-sign" role="cell" aria-hidden="true">
+                {line.kind === "addition" ? "+" : line.kind === "deletion" ? "−" : " "}
+              </span>
+              <code className="review-code-text" role="cell">{line.text || " "}</code>
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function buildReviewLines(fileDiff: FileDiffMetadata): ReviewLine[] {
+  const lines: ReviewLine[] = [];
+
+  for (const hunk of fileDiff.hunks) {
+    lines.push({
+      kind: "hunk",
+      text: stripTrailingNewline(
+        hunk.hunkSpecs
+          ?? `@@ -${hunk.deletionStart},${hunk.deletionCount} +${hunk.additionStart},${hunk.additionCount} @@`,
+      ),
+    });
+
+    let oldLine = hunk.deletionStart;
+    let newLine = hunk.additionStart;
+
+    for (const segment of hunk.hunkContent) {
+      if (segment.type === "context") {
+        for (let index = 0; index < segment.lines; index += 1) {
+          const text = fileDiff.additionLines[segment.additionLineIndex + index]
+            ?? fileDiff.deletionLines[segment.deletionLineIndex + index]
+            ?? "";
+          lines.push({
+            kind: "context",
+            oldLine,
+            newLine,
+            text: stripTrailingNewline(text),
+          });
+          oldLine += 1;
+          newLine += 1;
+        }
+        continue;
+      }
+
+      for (let index = 0; index < segment.deletions; index += 1) {
+        lines.push({
+          kind: "deletion",
+          oldLine,
+          text: stripTrailingNewline(fileDiff.deletionLines[segment.deletionLineIndex + index] ?? ""),
+        });
+        oldLine += 1;
+      }
+      for (let index = 0; index < segment.additions; index += 1) {
+        lines.push({
+          kind: "addition",
+          newLine,
+          text: stripTrailingNewline(fileDiff.additionLines[segment.additionLineIndex + index] ?? ""),
+        });
+        newLine += 1;
+      }
+    }
+  }
+
+  return lines;
+}
+
+function stripTrailingNewline(value: string): string {
+  return value.replace(/\r?\n$/, "");
 }
 
 function fileChangeSymbol(kind: FileChangeKind): string {
@@ -199,26 +282,6 @@ function diffStats(fileDiff: FileDiffMetadata): { additions: number; removals: n
     }),
     { additions: 0, removals: 0 },
   );
-}
-
-function diffOptions(themeType: ThemeType): FileDiffOptions<undefined> {
-  return {
-    theme: {
-      light: "pierre-light",
-      dark: "pierre-dark",
-    },
-    themeType,
-    diffStyle: "unified",
-    diffIndicators: "bars",
-    hunkSeparators: "line-info",
-    lineDiffType: "word-alt",
-    overflow: "scroll",
-    unsafeCSS: pierrePrettyScrollbarCss,
-    collapsedContextThreshold: 4,
-    expansionLineCount: 20,
-    stickyHeader: false,
-    disableFileHeader: true,
-  };
 }
 
 function StatusLine({

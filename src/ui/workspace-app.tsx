@@ -23,6 +23,7 @@ import {
   getFileChangePathDisplay,
   getPatchDisplayParts,
 } from "./patch-display.js";
+import { mountReviewPayload } from "./review-payload.js";
 import {
   decodeToolResult,
   toolResultFromChatGptGlobals,
@@ -56,7 +57,6 @@ let expanded = false;
 let errorMessage: string | null = null;
 let currentPayload: MountedPayload | null = null;
 let currentPayloadContainer: HTMLElement | null = null;
-let payloadMountRequestId = 0;
 let openWorkspaceInstructionKey: string | null = null;
 let showAvailableWorkspaceInstructions = false;
 let pendingToolResult: CallToolResult | null = null;
@@ -345,7 +345,7 @@ function renderEmpty(message: string, tone: "muted" | "error" = "muted"): void {
   appRoot.replaceChildren(main);
 }
 
-async function renderPayloadIfNeeded(): Promise<void> {
+function renderPayloadIfNeeded(): void {
   if (!card || !currentPayloadContainer || !expanded) return;
 
   const target = currentPayloadContainer;
@@ -370,11 +370,6 @@ async function renderPayloadIfNeeded(): Promise<void> {
     return;
   }
 
-  const requestId = ++payloadMountRequestId;
-  renderStatus(target, "Loading review...");
-  const { mountReviewPayload } = await import("./review-payload.js");
-  if (requestId !== payloadMountRequestId || target !== currentPayloadContainer || !card) return;
-
   currentPayload = mountReviewPayload(target, {
     card,
     hostContext,
@@ -383,7 +378,6 @@ async function renderPayloadIfNeeded(): Promise<void> {
 }
 
 function unmountPayload(): void {
-  payloadMountRequestId += 1;
   unmountCurrentPayload();
   currentPayload = null;
   currentPayloadContainer = null;
