@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
 
 const DEFAULT_EXEC_YIELD_MS = 10_000;
@@ -48,6 +49,7 @@ export interface ProcessSnapshot {
 
 interface ManagedProcess {
   write(data: string): void;
+  writeError?(): Error | undefined;
   kill(signal?: NodeJS.Signals): void;
   resize?(columns: number, rows: number): void;
 }
@@ -284,18 +286,30 @@ export class ProcessSessionManager {
       session.process.resize(session.columns, session.rows);
     }
 
+    const writableChars = session.isPty ? chars : chars.replaceAll("\u0003", "");
+    let writeRequested = false;
+
     if (session.isPty) {
       // A terminal driver turns Ctrl-C into SIGINT for the foreground process
       // group. Writing the byte preserves that behavior (and raw-mode input)
       // while keeping ordinary terminal input unchanged.
-      if (chars && session.running) session.process?.write(chars);
+      if (chars && session.running) {
+        writeRequested = true;
+        const writeError = session.process?.writeError?.();
+        if (writeError) throw writeError;
+        session.process?.write(chars);
+      }
     } else {
       const interruptRequested = chars.includes("\u0003") && session.running;
       if (interruptRequested) {
         session.process?.kill("SIGINT");
       }
-      const writableChars = chars.replaceAll("\u0003", "");
-      if (writableChars && session.running) session.process?.write(writableChars);
+      if (writableChars && session.running) {
+        writeRequested = true;
+        const writeError = session.process?.writeError?.();
+        if (writeError) throw writeError;
+        session.process?.write(writableChars);
+      }
     }
 
     if ((interactionRequested || !session.buffer.hasOutput()) && session.running) {
@@ -303,6 +317,11 @@ export class ProcessSessionManager {
       const maximum = interactionRequested ? MAX_COMMAND_YIELD_MS : MAX_POLL_YIELD_MS;
       const yieldTimeMs = boundedInteger(input.yieldTimeMs, fallback, maximum);
       await this.waitForExit(session, yieldTimeMs);
+    }
+
+    if (writeRequested) {
+      const writeError = session.process?.writeError?.();
+      if (writeError) throw writeError;
     }
 
     const snapshot = this.consume(session, input.maxOutputTokens);
@@ -423,15 +442,55 @@ export class ProcessSessionManager {
       detached,
     });
 
+    let stdinError: Error | undefined;
+    const recordStdinError = (error: unknown): void => {
+      if (stdinError) return;
+      stdinError = error instanceof Error ? error : new Error(String(error));
+    };
+    child.stdin.on("error", recordStdinError);
+    const writeStdin = (data: string): void => {
+      if (stdinError) return;
+      try {
+        child.stdin.write(data, (error) => {
+          if (error) recordStdinError(error);
+        });
+      } catch (error) {
+        recordStdinError(error);
+      }
+    };
+
     this.attachProcess(session, {
-      write: (data) => child.stdin.write(data),
+      write: writeStdin,
+      writeError: () => stdinError,
       kill: (signal = "SIGTERM") => terminateProcessTree(child, signal, detached),
       resize: input.tty ? () => undefined : undefined,
     });
-    child.stdout.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
-    child.stderr.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
+
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let stdoutEnded = false;
+    let stderrEnded = false;
+    const flushStdout = (): void => {
+      if (stdoutEnded) return;
+      stdoutEnded = true;
+      this.append(session, stdoutDecoder.end());
+    };
+    const flushStderr = (): void => {
+      if (stderrEnded) return;
+      stderrEnded = true;
+      this.append(session, stderrDecoder.end());
+    };
+
+    child.stdout.on("data", (data: Buffer) => this.append(session, stdoutDecoder.write(data)));
+    child.stderr.on("data", (data: Buffer) => this.append(session, stderrDecoder.write(data)));
+    child.stdout.on("end", flushStdout);
+    child.stderr.on("end", flushStderr);
     child.on("error", (error) => this.append(session, `${error.message}\n`));
-    child.on("close", (code, signal) => this.finish(session, code ?? undefined, signal ?? undefined));
+    child.on("close", (code, signal) => {
+      flushStdout();
+      flushStderr();
+      this.finish(session, code ?? undefined, signal ?? undefined);
+    });
   }
 
   private async startPty(session: ProcessSession, input: StartCommandInput): Promise<void> {

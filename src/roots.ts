@@ -1,5 +1,5 @@
 import { dirname, basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 
 export class AccessDeniedError extends Error {
@@ -87,6 +87,14 @@ async function resolvePathWithMissingSegments(path: string): Promise<string> {
       return resolve(await realpath(candidate), ...missingSegments.slice().reverse());
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
+
+      try {
+        if ((await lstat(candidate)).isSymbolicLink()) {
+          throw new AccessDeniedError(`Path resolves outside allowed roots: ${path}`);
+        }
+      } catch (lstatError) {
+        if (!isMissingPathError(lstatError)) throw lstatError;
+      }
 
       const parent = dirname(candidate);
       if (parent === candidate) return path;

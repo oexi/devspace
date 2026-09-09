@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   resolveAllowedPath,
   resolveConfinedPath,
 } from "./roots.js";
+import { writeFileTool } from "./pi-tools.js";
 
 const home = homedir();
 
@@ -49,6 +50,11 @@ try {
     await resolveConfinedPath(legalName, [allowedRoot]),
     legalName,
   );
+  const regularMissing = join(allowedRoot, "new-directory", "created.txt");
+  assert.equal(
+    await resolveConfinedPath(regularMissing, [allowedRoot]),
+    regularMissing,
+  );
 
   if (process.platform !== "win32") {
     const allowedAlias = join(root, "allowed-alias");
@@ -62,9 +68,48 @@ try {
       await resolveConfinedPath(join(allowedAlias, "..foo"), [allowedAlias]),
       join(allowedAlias, "..foo"),
     );
+    assert.equal(
+      await resolveConfinedPath(join(allowedAlias, "new-directory", "created.txt"), [allowedAlias]),
+      join(allowedAlias, "new-directory", "created.txt"),
+    );
 
     await assert.rejects(
       resolveConfinedPath(join(link, "created.txt"), [allowedRoot]),
+      /outside allowed roots/,
+    );
+
+    const danglingTarget = join(outsideRoot, "dangling-target.txt");
+    const danglingLink = join(allowedRoot, "dangling-link");
+    await symlink(danglingTarget, danglingLink, "file");
+    await assert.rejects(
+      resolveConfinedPath(danglingLink, [allowedRoot]),
+      /outside allowed roots/,
+    );
+
+    await assert.rejects(
+      writeFileTool(
+        { path: "dangling-link", content: "must stay outside\n" },
+        { cwd: allowedRoot, root: allowedRoot },
+      ),
+      /outside allowed roots/,
+    );
+    await assert.rejects(access(danglingTarget), /ENOENT/);
+
+    const danglingAncestorTarget = join(outsideRoot, "missing-directory");
+    const danglingAncestor = join(allowedRoot, "dangling-ancestor");
+    await symlink(danglingAncestorTarget, danglingAncestor, "dir");
+    await assert.rejects(
+      resolveConfinedPath(join(danglingAncestor, "created.txt"), [allowedRoot]),
+      /outside allowed roots/,
+    );
+
+    const internalDanglingTarget = join(allowedRoot, "not-created-yet");
+    const internalDanglingLink = join(allowedRoot, "internal-dangling-link");
+    const internalDanglingChain = join(allowedRoot, "internal-dangling-chain");
+    await symlink(internalDanglingTarget, internalDanglingLink, "file");
+    await symlink(internalDanglingLink, internalDanglingChain, "file");
+    await assert.rejects(
+      resolveConfinedPath(internalDanglingChain, [allowedRoot]),
       /outside allowed roots/,
     );
   }

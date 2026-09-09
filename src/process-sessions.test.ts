@@ -59,6 +59,34 @@ const environment = await manager.start({
 assert.equal(environment.running, false);
 assert.match(environment.output, /1,dumb,cat,cat,cat,1,workspace-a,\/tmp\/devspace-workspace-a/);
 
+const splitUnicode = [
+  "const emit = (stream, parts, delay) => parts.forEach((part, index) => setTimeout(() => stream.write(Buffer.from(part)), delay + index * 100));",
+  "emit(process.stdout, [Buffer.from('stdout:'), [0xe4], [0xb8, 0xad, 0xf0], [0x9f, 0x99, 0x82, 0x0a]], 0);",
+  "emit(process.stderr, [Buffer.from('stderr:'), [0xe5], [0xa5, 0xbd, 0xf0], [0x9f, 0x8c, 0x9f, 0x0a]], 500);",
+].join(" ");
+const unicodeOutput = await manager.start({
+  workspaceId: "workspace-a",
+  cwd: process.cwd(),
+  command: `${node} -e ${JSON.stringify(splitUnicode)}`,
+  yieldTimeMs: 2_000,
+});
+assert.equal(unicodeOutput.running, false);
+assert.match(unicodeOutput.output, /stdout:中🙂\n/);
+assert.match(unicodeOutput.output, /stderr:好🌟\n/);
+
+const incompleteUnicode = await manager.start({
+  workspaceId: "workspace-a",
+  cwd: process.cwd(),
+  command: `${node} -e ${JSON.stringify(
+    "process.stdout.write('stdout:'); process.stdout.write(Buffer.from([0xe4])); process.stderr.write('stderr:'); process.stderr.write(Buffer.from([0xf0, 0x9f]));",
+  )}`,
+  yieldTimeMs: 2_000,
+});
+assert.equal(incompleteUnicode.running, false);
+assert.match(incompleteUnicode.output, /stdout:/);
+assert.match(incompleteUnicode.output, /stderr:/);
+assert.equal((incompleteUnicode.output.match(/�/g) ?? []).length, 2);
+
 if (process.platform !== "win32" && existsSync("/bin/bash")) {
   const previousShell = process.env.SHELL;
   process.env.SHELL = "/bin/bash";
@@ -188,6 +216,82 @@ const interrupted = await manager.write({
 });
 assert.equal(interrupted.running, false);
 if (process.platform !== "win32") assert.equal(interrupted.signal, "SIGINT");
+
+if (process.platform !== "win32") {
+  const nonReaderManager = new ProcessSessionManager({ completedSessionTtlMs: 1_000 });
+  try {
+    const nonReader = await nonReaderManager.start({
+      workspaceId: "workspace-a",
+      cwd: process.cwd(),
+      command: "sleep 2",
+      yieldTimeMs: 10,
+    });
+    assert.equal(nonReader.running, true);
+    assert.ok(nonReader.sessionId);
+
+    const writeStartedAt = Date.now();
+    const nonReaderResult = await nonReaderManager.write({
+      workspaceId: "workspace-a",
+      sessionId: nonReader.sessionId,
+      chars: "x".repeat(1_000_000),
+      yieldTimeMs: 10,
+    });
+    assert.ok(Date.now() - writeStartedAt < 1_000, "stdin writes must not wait for drain");
+    assert.equal(nonReaderResult.running, true);
+    nonReaderManager.terminate("workspace-a", nonReader.sessionId);
+  } finally {
+    await nonReaderManager.shutdown();
+  }
+
+  const closedStdinManager = new ProcessSessionManager({ completedSessionTtlMs: 1_000 });
+  try {
+    const closedStdin = await closedStdinManager.start({
+      workspaceId: "workspace-a",
+      cwd: process.cwd(),
+      command: "exec 0<&-; sleep 2",
+      yieldTimeMs: 50,
+    });
+    assert.equal(closedStdin.running, true);
+    assert.ok(closedStdin.sessionId);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    let firstWriteError: unknown;
+    try {
+      const firstWrite = await closedStdinManager.write({
+        workspaceId: "workspace-a",
+        sessionId: closedStdin.sessionId,
+        chars: "hello",
+        yieldTimeMs: 10,
+      });
+      assert.equal(firstWrite.running, true);
+    } catch (error) {
+      firstWriteError = error;
+    }
+    if (firstWriteError !== undefined) {
+      assert.equal((firstWriteError as NodeJS.ErrnoException).code, "EPIPE");
+    }
+
+    const stillRunning = await closedStdinManager.write({
+      workspaceId: "workspace-a",
+      sessionId: closedStdin.sessionId,
+      yieldTimeMs: 0,
+    });
+    assert.equal(stillRunning.running, true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await assert.rejects(
+      closedStdinManager.write({
+        workspaceId: "workspace-a",
+        sessionId: closedStdin.sessionId,
+        chars: "again",
+        yieldTimeMs: 0,
+      }),
+      (error: unknown) => error instanceof Error && (error as NodeJS.ErrnoException).code === "EPIPE",
+    );
+    closedStdinManager.terminate("workspace-a", closedStdin.sessionId);
+  } finally {
+    await closedStdinManager.shutdown();
+  }
+}
 
 let buffered = await manager.start({
   workspaceId: "workspace-a",
