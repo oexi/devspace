@@ -36,7 +36,6 @@ import {
 } from "./local-agent-presentation.js";
 import {
   type OnboardingDestination,
-  SUBAGENT_SKILL_INSTALL_COMMAND,
   resolveOnboardingUsage,
   updateOnboardingSubagentsConfig,
   usesChatGpt,
@@ -269,19 +268,9 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
         "Owner password",
       );
     }
-    if (useCodingAgents) {
-      prompts.note(
-        [
-          SUBAGENT_SKILL_INSTALL_COMMAND,
-          "",
-          "The Skills CLI will let you choose which Coding Agents receive it.",
-        ].join("\n"),
-        "Install the Subagents skill",
-      );
-    }
     const nextSteps = [
       useChatGpt ? "Run `devspace serve`, then connect ChatGPT." : undefined,
-      useCodingAgents ? "Run the skill command above before delegating from your Coding Agents." : undefined,
+      useCodingAgents ? "Run `devspace agents targets` to see available Coding Agents." : undefined,
     ].filter(Boolean).join(" ");
     prompts.outro(nextSteps);
   } catch (error) {

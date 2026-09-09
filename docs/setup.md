@@ -58,15 +58,9 @@ Setup detects supported Coding Agents and asks which ones DevSpace may use.
 These choices are stored as provider objects under `subagents` in
 `~/.devspace/config.jsonc`.
 
-If you selected Coding Agents, setup prints:
-
-```bash
-npx skills add Waishnav/devspace --skill subagents --global
-```
-
-The Skills CLI asks which installed Coding Agents should receive the skill.
-The skill uses `devspace agents targets`, `run`, `continue`, `show`, and `ls`.
-These commands do not require `devspace serve`.
+Use `devspace agents targets`, `run`, `continue`, `show`, and `ls` directly
+from a terminal. These commands do not require `devspace serve` or a separate
+skill. MCP hosts use `run_task`, `wait_task`, `continue_task`, and `cancel_task`.
 
 ### Connect ChatGPT
 

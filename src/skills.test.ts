@@ -217,15 +217,19 @@ try {
     subagents: { enabled: true, providers: [] },
   }));
   const experimentalSkills = loadWorkspaceSkills(experimentalConfig, projectRoot).skills;
-  const managedSubagents = experimentalSkills.find((skill) => skill.name === "subagents");
-  assert.ok(managedSubagents);
-  assert.equal(
-    managedSubagents.filePath,
-    join(devspaceSkills, "subagents", "SKILL.md"),
-  );
+  assert.equal(experimentalSkills.some((skill) => skill.name === "subagents"), false);
   assert.match(
     await readFile(join(devspaceSkills, "subagents", "SKILL.md"), "utf8"),
-    /# DevSpace subagents/,
+    /# Stale subagents skill/,
+  );
+  await rm(join(devspaceSkills, "subagents"), { recursive: true });
+  assert.equal(
+    loadWorkspaceSkills(experimentalConfig, projectRoot).skills.some((skill) => skill.name === "subagents"),
+    false,
+  );
+  await assert.rejects(
+    readFile(join(devspaceSkills, "subagents", "SKILL.md")),
+    { code: "ENOENT" },
   );
 
   const duplicateConfig = loadConfig(writeTestDevspaceConfig(configDir, {

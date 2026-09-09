@@ -233,30 +233,20 @@ DevSpace looks in standard Agent Skills locations:
 
 It also checks compatibility and custom paths:
 
-- the bundled `subagents` skill when Subagents are enabled, unless `~/.devspace/skills/subagents/SKILL.md` exists
 - `skills.agentDir/skills`, defaulting to `~/.codex/skills`
 - additional paths from `skills.paths`
 
 When Subagents are enabled, DevSpace loads agent profiles from
 `~/.devspace/agents/*.md` and project `.devspace/agents/*.md`, then exposes a
-compact profile catalog through `open_workspace`. The bundled
-`subagents` skill keeps the model-facing workflow to
-`devspace agents targets`, `devspace agents ls`, `devspace agents run`,
-`devspace agents continue`, `devspace agents cancel`, and `devspace agents show`.
-Those commands automatically manage the internal local agent daemon; `devspace
-serve` is not a prerequisite.
-`devspace agents ls` lists existing subagent sessions, not profile
-definitions.
+compact profile catalog through `open_workspace`. MCP hosts use
+`run_task`, `wait_task`, `continue_task`, and `cancel_task` without a separate
+subagents skill. Legacy copies of that skill are ignored and are not refreshed
+or re-created.
 
-For a Coding Agent, run the installation command printed by
-`devspace init`:
-
-```bash
-npx skills add Waishnav/devspace --skill subagents --global
-```
-
-The Skills CLI handles agent discovery and installation. DevSpace setup does
-not copy files into agent skill directories.
+Terminal users can use `devspace agents targets`, `run`, `continue`, `cancel`,
+`show`, and `ls`. Those commands automatically manage the internal local agent
+daemon; `devspace serve` is not a prerequisite. `devspace agents ls` lists
+existing subagent sessions, not profile definitions.
 
 Packaged agent profile examples under `examples/agents/` are starter templates.
 Copy or adapt them into one of the active profile directories before use.

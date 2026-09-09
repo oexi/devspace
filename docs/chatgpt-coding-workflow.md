@@ -116,7 +116,6 @@ DevSpace discovers standard Agent Skills from:
 
 It also keeps compatibility with:
 
-- the bundled `subagents` skill when Subagents are enabled, unless `~/.devspace/skills/subagents/SKILL.md` exists
 - `skills.agentDir/skills`, defaulting to `~/.codex/skills`
 - additional paths from `skills.paths`
 
@@ -142,11 +141,10 @@ Skill paths may be outside the workspace. DevSpace only permits reading:
 
 Set `skills.enabled` to `false` to hide skills from workspace output. Enable
 Subagents and choose providers through `devspace init` or the persisted provider
-configuration. The bundled `subagents` skill teaches the minimal
-`devspace agents targets`, `devspace agents ls`, `devspace agents run`,
-`devspace agents continue`, `devspace agents cancel`, and `devspace agents show` workflow. The catalog
-comes from `open_workspace`; `devspace agents ls` lists existing subagent
-sessions for that workspace.
+configuration. MCP hosts delegate through `run_task`, `wait_task`,
+`continue_task`, and `cancel_task`; no separate subagents skill is required.
+The catalog comes from `open_workspace`. Terminal users can also use
+`devspace agents`; `devspace agents ls` lists existing subagent sessions.
 
 ## Tool Names
 

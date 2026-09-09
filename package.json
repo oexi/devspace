@@ -19,7 +19,6 @@
     "examples",
     "schema",
     "scripts",
-    "skills",
     "README.md"
   ],
   "publishConfig": {
