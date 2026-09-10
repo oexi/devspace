@@ -26,7 +26,7 @@ import {
 } from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
-import { WORKSPACE_APP_URI } from "./workspace-app-resource.js";
+import { workspaceAppUri } from "./workspace-app-resource.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 import { chatGptClientMetadata, mockClientMetadataEndpoint } from "./test-support/oauth-client-metadata.test.js";
 
@@ -78,6 +78,19 @@ test("enabled subagents expose bounded high-level task tools", async (t) => {
 
   const runTask = tools.tools.find((tool) => tool.name === "run_task");
   const waitTask = tools.tools.find((tool) => tool.name === "wait_task");
+  for (const [name, kind] of [["open_workspace", "open_workspace"], ["show_changes", "show_changes"]] as const) {
+    const tool = tools.tools.find((candidate) => candidate.name === name);
+    assert.equal(tool?._meta?.["openai/outputTemplate"], workspaceAppUri(kind));
+  }
+  const resources = await context.client.listResources();
+  for (const kind of ["open_workspace", "task", "show_changes"] as const) {
+    assert.ok(resources.resources.some((resource) => resource.uri === workspaceAppUri(kind)));
+    const resource = await context.client.readResource({ uri: workspaceAppUri(kind) });
+    const content = resource.contents[0];
+    assert.equal(content?.uri, workspaceAppUri(kind));
+    assert.ok(content && "text" in content);
+    assert.ok(content.text.includes(`data-card-kind="${kind}"`));
+  }
   const targetSchema = runTask?.inputSchema?.properties?.target as {
     description?: string;
   } | undefined;
@@ -100,11 +113,11 @@ test("enabled subagents expose bounded high-level task tools", async (t) => {
     const ui = (tool?._meta as {
       ui?: { resourceUri?: string; visibility?: string[] };
     } | undefined)?.ui;
-    assert.equal(ui?.resourceUri, WORKSPACE_APP_URI);
+    assert.equal(ui?.resourceUri, workspaceAppUri("task"));
     assert.deepEqual(ui?.visibility, ["model"]);
     assert.equal(
       (tool?._meta as { "openai/outputTemplate"?: string } | undefined)?.["openai/outputTemplate"],
-      WORKSPACE_APP_URI,
+      workspaceAppUri("task"),
     );
   }
 });

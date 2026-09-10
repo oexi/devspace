@@ -93,7 +93,8 @@ import {
 } from "./tool-surfaces/types.js";
 import {
   buildInlineWorkspaceAppHtml,
-  WORKSPACE_APP_URI,
+  workspaceAppUri,
+  type WorkspaceAppKind,
 } from "./workspace-app-resource.js";
 
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
@@ -302,7 +303,7 @@ function getWorkspaceAppManifestEntry(): WorkspaceAppManifestEntry {
   return entry;
 }
 
-function workspaceAppHtml(): string {
+function workspaceAppHtml(kind: WorkspaceAppKind): string {
   const entry = getWorkspaceAppManifestEntry();
   const entryScript = readFileSync(
     new URL(`../dist/ui/${entry.file}`, import.meta.url),
@@ -311,7 +312,7 @@ function workspaceAppHtml(): string {
   const styles = (entry.css ?? []).map((stylesheet) =>
     readFileSync(new URL(`../dist/ui/${stylesheet}`, import.meta.url), "utf8")
   );
-  return buildInlineWorkspaceAppHtml({ script: entryScript, styles });
+  return buildInlineWorkspaceAppHtml({ script: entryScript, styles, kind });
 }
 
 function appCsp(): {
@@ -362,36 +363,38 @@ export function registerMcpSurface(
     ? withTrackedToolHandlers(server, trackToolActivity)
     : server;
 
-  registerAppResource(
-    registrationTarget,
-    "DevSpace Tool Cards",
-    WORKSPACE_APP_URI,
-    {
-      description: "Interactive cards for DevSpace workspace, task, and change-review results.",
-      _meta: {
-        ui: {
-          csp: appCsp(),
+  for (const kind of ["open_workspace", "task", "show_changes"] as const) {
+    registerAppResource(
+      registrationTarget,
+      `DevSpace ${kind} Card`,
+      workspaceAppUri(kind),
+      {
+        description: "Interactive cards for DevSpace workspace, task, and change-review results.",
+        _meta: {
+          ui: {
+            csp: appCsp(),
+          },
         },
       },
-    },
-    async () => {
-      await assertWorkspaceAppAssets();
-      return {
-        contents: [
-          {
-            uri: WORKSPACE_APP_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text: workspaceAppHtml(),
-            _meta: {
-              ui: {
-                csp: appCsp(),
+      async () => {
+        await assertWorkspaceAppAssets();
+        return {
+          contents: [
+            {
+              uri: workspaceAppUri(kind),
+              mimeType: RESOURCE_MIME_TYPE,
+              text: workspaceAppHtml(kind),
+              _meta: {
+                ui: {
+                  csp: appCsp(),
+                },
               },
             },
-          },
-        ],
-      };
-    },
-  );
+          ],
+        };
+      },
+    );
+  }
 
   registerAppTool(
     registrationTarget,
@@ -743,7 +746,7 @@ export function registerMcpSurface(
         workspaceId: z.string(),
         reviewRef: z.string().regex(/^[0-9a-f]{40,64}$/),
       }),
-      ...workspaceAppDescriptorMeta(config, ["model", "app"]),
+      ...workspaceAppDescriptorMeta(config, ["model", "app"], "show_changes"),
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId }, { _meta }) => {

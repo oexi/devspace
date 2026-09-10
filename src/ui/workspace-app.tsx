@@ -26,6 +26,7 @@ import {
 import { mountReviewPayload } from "./review-payload.js";
 import {
   decodeToolResult,
+  acceptsToolResult,
   toolResultFromChatGptGlobals,
   type ChatGptToolGlobals,
 } from "./tool-result.js";
@@ -83,6 +84,7 @@ async function boot(): Promise<void> {
   );
 
   app.ontoolresult = (result) => {
+    if (!acceptsToolResult(result, document.documentElement.dataset.cardKind)) return;
     if (!connected) {
       pendingToolResult = result;
       return;
@@ -115,7 +117,9 @@ async function boot(): Promise<void> {
   };
 
   const preConnectResult = chatGptRestoredResult();
-  if (preConnectResult) pendingToolResult = preConnectResult;
+  if (preConnectResult && acceptsToolResult(preConnectResult, document.documentElement.dataset.cardKind)) {
+    pendingToolResult = preConnectResult;
+  }
 
   try {
     await app.connect();
@@ -139,6 +143,7 @@ async function boot(): Promise<void> {
 }
 
 async function applyToolResult(result: CallToolResult): Promise<void> {
+  if (!acceptsToolResult(result, document.documentElement.dataset.cardKind)) return;
   const decoded = decodeToolResult(result);
   if (decoded.kind === "card") {
     setCard(decoded.card);
@@ -221,14 +226,18 @@ function chatGptRestoredResult(): CallToolResult | undefined {
 
 function handleChatGptGlobalsChanged(event: Event): void {
   const customEvent = event as CustomEvent<{ globals?: ChatGptToolGlobals }>;
+  const globals = customEvent.detail?.globals;
+  // Theme/size events must not replay a previous tool output.
+  if (!globals || !("toolOutput" in globals || "toolResponseMetadata" in globals)) return;
   const restored = toolResultFromChatGptGlobals(customEvent.detail?.globals)
     ?? chatGptRestoredResult();
   if (!restored) return;
+  if (!acceptsToolResult(restored, document.documentElement.dataset.cardKind)) return;
   if (!connected) {
     pendingToolResult = restored;
     return;
   }
-  if (!card) void applyToolResult(restored);
+  void applyToolResult(restored);
 }
 
 function applyHostContext(): void {

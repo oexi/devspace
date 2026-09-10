@@ -45,15 +45,22 @@ function resolveWorkspaceAppResourceUri(): string {
 
 export const WORKSPACE_APP_URI = resolveWorkspaceAppResourceUri();
 
+export type WorkspaceAppKind = "open_workspace" | "task" | "show_changes";
+
+export function workspaceAppUri(kind: WorkspaceAppKind): string {
+  return WORKSPACE_APP_URI.replace(/\.html$/, `-${kind}.html`);
+}
+
 export function buildInlineWorkspaceAppHtml(input: {
   script: string;
   styles: string[];
+  kind?: WorkspaceAppKind;
 }): string {
   const styles = input.styles.map(escapeInlineStyle).join("\n");
   const script = escapeInlineScript(input.script);
 
   return `<!doctype html>
-<html lang="en">
+<html lang="en"${input.kind ? ` data-card-kind="${input.kind}"` : ""}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

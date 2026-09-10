@@ -11,6 +11,13 @@ export interface ChatGptToolGlobals {
   toolResponseMetadata?: unknown;
 }
 
+export function acceptsToolResult(result: CallToolResult, kind: string | undefined): boolean {
+  const decoded = decodeToolResult(result);
+  if (decoded.kind === "invalid") return false;
+  const resultKind = decoded.kind === "review-reference" ? "show_changes" : decoded.card.tool;
+  return !kind || resultKind === kind;
+}
+
 export function decodeToolResult(result: CallToolResult): DecodedToolResult {
   const structured = asRecord(result.structuredContent);
   const rawMetaCard = asRecord(asRecord(result._meta)?.card);
@@ -84,7 +91,7 @@ function taskFields(
   metaCard: Record<string, unknown> | undefined,
 ): NonNullable<ToolResultCard["task"]> | undefined {
   const metaTool = stringField(metaCard?.tool);
-  const operation = taskOperation(metaCard?.operation) ?? taskOperation(structured.operation);
+  const operation = taskOperation(structured.operation) ?? taskOperation(metaCard?.operation);
   if (metaTool !== "task" && !operation) return undefined;
   const taskId = stringField(structured.taskId);
   const status = taskStatus(structured.status);

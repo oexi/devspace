@@ -4,7 +4,18 @@ import test from "node:test";
 import {
   buildInlineWorkspaceAppHtml,
   workspaceAppResourceUriForEntry,
+  workspaceAppUri,
 } from "./workspace-app-resource.js";
+
+test("tool families have distinct resources with matching template bindings", () => {
+  const kinds = ["open_workspace", "task", "show_changes"] as const;
+  assert.equal(new Set(kinds.map(workspaceAppUri)).size, 3);
+  for (const kind of kinds) {
+    assert.ok(workspaceAppUri(kind).endsWith(`-${kind}.html`));
+    const html = buildInlineWorkspaceAppHtml({ script: "", styles: [], kind });
+    assert.ok(html.includes(`data-card-kind="${kind}"`));
+  }
+});
 
 test("workspace app resource URI changes with built JS or CSS assets", () => {
   const first = workspaceAppResourceUriForEntry({

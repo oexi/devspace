@@ -1,7 +1,7 @@
 import * as z from "zod/v4";
 import { logEvent, commandPreview } from "../logger.js";
 import type { ServerConfig } from "../config.js";
-import { WORKSPACE_APP_URI } from "../workspace-app-resource.js";
+import { workspaceAppUri, type WorkspaceAppKind } from "../workspace-app-resource.js";
 import {
   type DiffStats,
   type ToolContent,
@@ -23,16 +23,17 @@ export function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
 export function workspaceAppDescriptorMeta(
   config: ServerConfig,
   visibility: Array<"model" | "app"> = ["model"],
+  kind: WorkspaceAppKind = "open_workspace",
 ): ToolWidgetDescriptorMeta {
   if (!config.uiEnabled) return { _meta: {} };
 
   return {
     _meta: {
       ui: {
-        resourceUri: WORKSPACE_APP_URI,
+        resourceUri: workspaceAppUri(kind),
         visibility,
       },
-      "openai/outputTemplate": WORKSPACE_APP_URI,
+      "openai/outputTemplate": workspaceAppUri(kind),
     },
   };
 }

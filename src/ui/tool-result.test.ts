@@ -3,8 +3,39 @@ import test from "node:test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import {
   decodeToolResult,
+  acceptsToolResult,
   toolResultFromChatGptGlobals,
 } from "./tool-result.js";
+
+test("card templates reject results from other tool families on initial load and restoration", () => {
+  const workspace: CallToolResult = { content: [], structuredContent: {
+    workspaceId: "ws_1", root: "/tmp/project", mode: "checkout",
+  } };
+  const taskResult: CallToolResult = { content: [], structuredContent: {
+    taskId: "task_1", operation: "run_task", status: "running", target: "codex",
+  } };
+  const review: CallToolResult = { content: [], structuredContent: {
+    workspaceId: "ws_1", reviewRef: "a".repeat(40),
+  } };
+  const cases = [["open_workspace", workspace], ["task", taskResult], ["show_changes", review]] as const;
+  for (const [kind] of cases) {
+    for (const [resultKind, result] of cases) {
+      assert.equal(acceptsToolResult(result, kind), kind === resultKind);
+    }
+    assert.equal(acceptsToolResult({ content: [] }, kind), false);
+  }
+  assert.equal(acceptsToolResult({ ...taskResult, structuredContent: {
+    taskId: "task_1", operation: "run_task", status: "completed", target: "codex",
+  } }, "task"), true);
+});
+
+test("current task output takes precedence over stale metadata operation", () => {
+  const decoded = decodeToolResult({ content: [], structuredContent: {
+    taskId: "task_1", operation: "wait_task", status: "completed", target: "codex",
+  }, _meta: { card: { tool: "task", operation: "run_task" } } });
+  assert.equal(decoded.kind, "card");
+  if (decoded.kind === "card") assert.equal(decoded.card.task?.operation, "wait_task");
+});
 
 test("workspace cards can be rebuilt from structured content without result metadata", () => {
   const decoded = decodeToolResult({

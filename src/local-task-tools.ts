@@ -140,7 +140,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
         yieldTimeMs: waitInputSchema,
       },
       outputSchema,
-      ...workspaceAppDescriptorMeta(config),
+      ...workspaceAppDescriptorMeta(config, ["model"], "task"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, target: requestedTarget, instruction, yieldTimeMs }) => {
@@ -197,7 +197,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
         yieldTimeMs: waitInputSchema,
       },
       outputSchema,
-      ...workspaceAppDescriptorMeta(config),
+      ...workspaceAppDescriptorMeta(config, ["model"], "task"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, taskId, instruction, yieldTimeMs }) => {
@@ -243,7 +243,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
           .describe("Task identifier returned by run_task or continue_task."),
       },
       outputSchema: cancelOutputSchema,
-      ...workspaceAppDescriptorMeta(config),
+      ...workspaceAppDescriptorMeta(config, ["model"], "task"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, taskId }) => {
@@ -288,7 +288,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
         yieldTimeMs: waitInputSchema,
       },
       outputSchema,
-      ...workspaceAppDescriptorMeta(config),
+      ...workspaceAppDescriptorMeta(config, ["model"], "task"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, taskId, yieldTimeMs }) => {
