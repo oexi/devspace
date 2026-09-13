@@ -46,6 +46,7 @@ interface WorkspaceReviewState {
   gitRoot?: string;
   openRef: string;
   baselineRef: string;
+  pendingRef: string;
   openRefAvailable: boolean;
   baselineRefAvailable: boolean;
   diagnostic?: string;
@@ -175,6 +176,7 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
         if (shouldRecord(result) && state.gitRoot) {
           const affectedPaths = typeof paths === "function" ? paths(result) : paths;
           addWorkspacePaths(state, root, affectedPaths);
+          await persistPendingPaths(state);
         }
         return result;
       });
@@ -202,6 +204,7 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
           const after = await safeCurrentWorkingTreeSnapshot(state.gitRoot);
           if (before && after) await recordSnapshotDiff(state, before, after);
           if (completed && process && after) updateProcessSnapshot(state, process(result), after);
+          await persistPendingPaths(state);
         }
       });
     },
@@ -233,6 +236,7 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
           const after = await safeCurrentWorkingTreeSnapshot(state.gitRoot);
           if (before && after) await recordSnapshotDiff(state, before, after);
           if (completed && process && after) updateProcessSnapshot(state, process(result), after);
+          await persistPendingPaths(state);
         }
       });
     },
@@ -286,6 +290,7 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
             await recordSnapshotDiff(state, previous, observation);
             state.processSnapshots.set(sessionId, observation);
           }
+          await persistPendingPaths(state);
         }
 
         const scopePaths = effectiveSince !== "last_shown"
@@ -327,6 +332,7 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
           state.trackedPaths.clear();
           state.turnScopeActive = false;
           if (wasTurnScoped) state.legacyFallbackAllowed = false;
+          await clearPendingPaths(state);
         }
         if (observation) {
           const processCheckpoint = markReviewed ? baselineCheckpoint : observation;
@@ -443,6 +449,7 @@ export async function removeReviewRefs(
     const refs = reviewRefs(workspaceId);
     await git(eligibility.gitRoot, ["update-ref", "-d", refs.openRef]);
     await git(eligibility.gitRoot, ["update-ref", "-d", refs.baselineRef]);
+    await git(eligibility.gitRoot, ["update-ref", "-d", refs.pendingRef]);
     return { cleaned: true };
   } catch (error) {
     return {
@@ -507,6 +514,13 @@ async function initializeWorkspaceState(
       state.legacyFallbackAllowed = false;
     }
 
+    const pendingPaths = await readReviewPaths(eligibility.gitRoot, state.pendingRef);
+    if (pendingPaths) {
+      state.trackedPaths = pendingPaths;
+      state.turnScopeActive = true;
+      state.legacyFallbackAllowed = false;
+    }
+
     state.gitRoot = eligibility.gitRoot;
   } catch (error) {
     state.diagnostic = error instanceof Error ? error.message : String(error);
@@ -538,11 +552,12 @@ async function commitForRef(gitRoot: string, ref: string): Promise<string | unde
 
 function reviewRefs(
   workspaceId: string,
-): Pick<WorkspaceReviewState, "openRef" | "baselineRef"> {
+): Pick<WorkspaceReviewState, "openRef" | "baselineRef" | "pendingRef"> {
   const segment = safeWorkspaceRefSegment(workspaceId);
   return {
     openRef: `${REVIEW_REF_PREFIX}/${segment}/open`,
     baselineRef: `${REVIEW_REF_PREFIX}/${segment}/baseline`,
+    pendingRef: `${REVIEW_REF_PREFIX}/${segment}/pending`,
   };
 }
 
@@ -632,6 +647,32 @@ async function recordSnapshotDiff(
   if (!state.gitRoot) return;
   const paths = await changedPathsBetween(state.gitRoot, before, after, state.root);
   for (const path of paths) state.trackedPaths.add(path);
+}
+
+async function persistPendingPaths(state: WorkspaceReviewState): Promise<void> {
+  if (!state.gitRoot) return;
+  if (state.trackedPaths.size === 0) {
+    await clearPendingPaths(state);
+    return;
+  }
+
+  const parent = await commitForRef(state.gitRoot, state.baselineRef)
+    ?? await commitForRef(state.gitRoot, state.openRef);
+  if (!parent) return;
+
+  const tree = (await git(state.gitRoot, ["rev-parse", "--verify", `${parent}^{tree}`])).stdout.trim();
+  const pending = await commitWorkingTreeSnapshot(
+    state.gitRoot,
+    parent,
+    tree,
+    state.trackedPaths,
+  );
+  await git(state.gitRoot, ["update-ref", state.pendingRef, pending]);
+}
+
+async function clearPendingPaths(state: WorkspaceReviewState): Promise<void> {
+  if (!state.gitRoot) return;
+  await git(state.gitRoot, ["update-ref", "-d", state.pendingRef]);
 }
 
 function updateProcessSnapshot(

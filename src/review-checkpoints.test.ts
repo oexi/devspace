@@ -261,6 +261,49 @@ test("review checkpoints survive a manager restart", async (t) => {
   assert.doesNotMatch(afterRestart.patch, /world/);
 });
 
+test("turn-scoped pending paths survive a manager restart before show_changes", async (t) => {
+  const root = await committedRepository(t);
+  const workspaceId = "ws_pending_restart";
+  const manager = createReviewCheckpointManager();
+  await manager.initializeWorkspace({ workspaceId, root });
+
+  await manager.trackDirectMutation(
+    { workspaceId, root },
+    async () => writeFile(join(root, "first.txt"), "first\n"),
+    ["first.txt"],
+  );
+  const first = await manager.reviewChanges({ workspaceId, root, markReviewed: true });
+  assert.deepEqual(first.files.map((file) => file.path), ["first.txt"]);
+
+  await manager.trackDirectMutation(
+    { workspaceId, root },
+    async () => writeFile(join(root, "second.txt"), "second\n"),
+    ["second.txt"],
+  );
+  await git(root, ["add", "second.txt"]);
+  await git(root, ["commit", "-m", "Commit before review"]);
+
+  const restartedManager = createReviewCheckpointManager();
+  await restartedManager.initializeWorkspace({ workspaceId, root });
+  const afterRestart = await restartedManager.reviewChanges({
+    workspaceId,
+    root,
+    markReviewed: true,
+  });
+  assert.deepEqual(afterRestart.files.map((file) => file.path), ["second.txt"]);
+  assert.match(afterRestart.patch, /second/);
+  assert.doesNotMatch(afterRestart.patch, /first/);
+
+  const restartedAgain = createReviewCheckpointManager();
+  await restartedAgain.initializeWorkspace({ workspaceId, root });
+  const repeated = await restartedAgain.reviewChanges({
+    workspaceId,
+    root,
+    markReviewed: false,
+  });
+  assert.equal(repeated.summary.files, 0);
+});
+
 test("concurrent initialization produces one usable checkpoint state", async (t) => {
   const root = await committedRepository(t);
   const manager = createReviewCheckpointManager();
