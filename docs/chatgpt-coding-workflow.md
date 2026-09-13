@@ -231,6 +231,13 @@ even when Apps UI metadata is disabled. For long coding jobs,
 invocation count; disabling DevSpace UI metadata alone cannot suppress
 host-owned tool-call history.
 
+DevSpace serves modern MCP request exchanges as SSE and emits transport
+keep-alive comment frames every 10 seconds. This keeps otherwise silent
+long-running calls such as process waits or shell commands from leaving the
+ChatGPT-to-DevSpace HTTP leg idle while the tool is still working. The
+heartbeat protects the MCP transport only; a disconnect between the ChatGPT
+client and OpenAI can still interrupt the visible conversation stream.
+
 Call `show_changes` exactly once after the final file modification in any turn
 that changes files. It shows the combined changes for that turn and advances
 the review point automatically. Reusing a workspace does not change this

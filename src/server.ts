@@ -99,6 +99,7 @@ import {
 
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 const DEVSPACE_VERSION = packageVersion();
+const MCP_SSE_KEEP_ALIVE_MS = 10_000;
 
 function packageVersion(): string {
   const packageJson = JSON.parse(
@@ -912,6 +913,13 @@ export function createServer(
     return adapter.server;
   }, {
     legacy: "reject",
+    // Keep every modern MCP exchange on an SSE stream so long-running tool
+    // calls receive transport-level comment heartbeats even when the tool has
+    // no progress notifications of its own. In auto mode, a silent tool call
+    // remains a pending JSON response until it emits a related message, so the
+    // SDK cannot send its built-in SSE keep-alive frames during that wait.
+    responseMode: "sse",
+    keepAliveMs: MCP_SSE_KEEP_ALIVE_MS,
     onerror: logMcpHandlerError,
   });
   const modernNodeHandler = toNodeHandler(modernMcpHandler, {

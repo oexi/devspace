@@ -892,7 +892,7 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
     {},
   );
   assert.equal(discovery.status, 200, await discovery.clone().text());
-  const discoveryBody = await discovery.json() as {
+  const discoveryBody = await readModernMcpJson(discovery) as {
     result?: {
       supportedVersions?: string[];
       ttlMs?: number;
@@ -919,7 +919,8 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
     {},
   );
   assert.equal(listed.status, 200, await listed.clone().text());
-  const listBody = await listed.json() as {
+  assert.match(listed.headers.get("content-type") ?? "", /text\/event-stream/);
+  const listBody = await readModernMcpJson(listed) as {
     result?: {
       tools?: Array<{ name?: string }>;
       ttlMs?: number;
@@ -941,7 +942,7 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
     },
   );
   assert.equal(called.status, 200, await called.clone().text());
-  const callBody = await called.json() as {
+  const callBody = await readModernMcpJson(called) as {
     result?: { structuredContent?: { workspaceId?: string } };
   };
   const modernWorkspaceId = callBody.result?.structuredContent?.workspaceId;
@@ -958,7 +959,7 @@ test("HTTP endpoint serves MCP 2026-07-28 and rejects legacy protocol requests",
     },
   );
   assert.equal(repeated.status, 200, await repeated.clone().text());
-  const repeatedBody = await repeated.json() as {
+  const repeatedBody = await readModernMcpJson(repeated) as {
     result?: { structuredContent?: { workspaceId?: string; agentsFiles?: unknown[] } };
   };
   assert.equal(repeatedBody.result?.structuredContent?.workspaceId, modernWorkspaceId);
@@ -1350,6 +1351,7 @@ function postModernMcp(
     method: "POST",
     headers: {
       ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      accept: "application/json, text/event-stream",
       "content-type": "application/json",
       "mcp-method": method,
       "mcp-protocol-version": "2026-07-28",
@@ -1373,6 +1375,21 @@ function postModernMcp(
       },
     }),
   });
+}
+
+async function readModernMcpJson(response: Response): Promise<Record<string, unknown>> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    return await response.json() as Record<string, unknown>;
+  }
+
+  const messages = (await response.text())
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => line.slice(6));
+  const lastMessage = messages.at(-1);
+  if (!lastMessage) throw new Error("Modern MCP SSE response did not contain a data frame.");
+  return JSON.parse(lastMessage) as Record<string, unknown>;
 }
 
 function postLegacyMcp(
