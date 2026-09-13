@@ -597,12 +597,42 @@ async function captureScopedWorkingTreeTree(
   try {
     await git(gitRoot, ["read-tree", baseline], { env });
     if (scope.pathspecs.length > 0) {
-      await git(gitRoot, ["add", "-A", "--", ...scope.pathspecs], { env });
+      const existingPathspecs = await resolveScopedSnapshotPathspecs(
+        gitRoot,
+        scope.pathspecs,
+        env,
+      );
+      if (existingPathspecs.length > 0) {
+        await git(gitRoot, ["add", "-A", "--", ...existingPathspecs], { env });
+      }
     }
     return (await git(gitRoot, ["write-tree"], { env })).stdout.trim();
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+async function resolveScopedSnapshotPathspecs(
+  gitRoot: string,
+  pathspecs: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<string[]> {
+  const output = (await git(gitRoot, [
+    "ls-files",
+    "-z",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "--",
+    ...pathspecs,
+  ], { env })).stdout;
+  const paths = new Set(
+    output
+      .split("\0")
+      .filter((path) => path.length > 0)
+      .map(normalizeGitPath),
+  );
+  return [...paths].map((path) => `:(top,literal)${path}`);
 }
 
 async function commitWorkingTreeSnapshot(

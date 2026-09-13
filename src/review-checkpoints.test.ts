@@ -304,6 +304,52 @@ test("turn-scoped pending paths survive a manager restart before show_changes", 
   assert.equal(repeated.summary.files, 0);
 });
 
+test("turn-scoped reviews ignore a file created and removed before show_changes after restart", async (t) => {
+  const root = await committedRepository(t);
+  const workspaceId = "ws_ephemeral_path_restart";
+  const manager = createReviewCheckpointManager();
+  await manager.initializeWorkspace({ workspaceId, root });
+
+  await manager.trackDirectMutation(
+    { workspaceId, root },
+    async () => {
+      const ephemeral = join(root, "ephemeral.txt");
+      await writeFile(ephemeral, "temporary\n");
+      await rm(ephemeral);
+    },
+    ["ephemeral.txt"],
+  );
+
+  const restarted = createReviewCheckpointManager();
+  await restarted.initializeWorkspace({ workspaceId, root });
+  const review = await restarted.reviewChanges({ workspaceId, root, markReviewed: true });
+
+  assert.equal(review.summary.files, 0);
+  assert.equal(review.patch, "");
+});
+
+test("turn-scoped reviews still report deletion of a baseline file", async (t) => {
+  const root = await committedRepository(t);
+  const workspaceId = "ws_tracked_deletion";
+  const manager = createReviewCheckpointManager();
+  await manager.initializeWorkspace({ workspaceId, root });
+
+  await manager.trackDirectMutation(
+    { workspaceId, root },
+    () => rm(join(root, "README.md")),
+    ["README.md"],
+  );
+
+  const review = await manager.reviewChanges({ workspaceId, root });
+  assert.deepEqual(review.files, [{
+    path: "README.md",
+    type: "deleted",
+    additions: 0,
+    removals: 1,
+  }]);
+  assert.match(review.patch, /-hello/);
+});
+
 test("concurrent initialization produces one usable checkpoint state", async (t) => {
   const root = await committedRepository(t);
   const manager = createReviewCheckpointManager();
