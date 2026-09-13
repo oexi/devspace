@@ -33,11 +33,12 @@ export const CONTINUE_TASK_TOOL_NAME = "continue_task";
 export const CANCEL_TASK_TOOL_NAME = "cancel_task";
 export const WAIT_TASK_TOOL_NAME = "wait_task";
 
-// Keep one host-visible wait within the same practical window as long command
-// calls. Long tasks remain inspectable through wait_task without rapid MCP
-// polling or depending on an unusually long host request timeout.
-export const TASK_WAIT_MS = 90_000;
-export const MAX_TASK_WAIT_MS = 110_000;
+// Keep host-visible task calls short enough that ChatGPT and other MCP hosts do
+// not have to hold one tool-result continuation open for a minute or more. The
+// worker itself is durable; longer work advances through repeated wait_task
+// calls while the MCP transport remains protected by SSE keep-alives.
+export const TASK_WAIT_MS = 25_000;
+export const MAX_TASK_WAIT_MS = 30_000;
 const TASK_POLL_INTERVAL_MS = 1_000;
 
 export type LocalTaskAgentClient = Pick<LocalAgentClient, "start" | "continue" | "cancel" | "get">;
@@ -111,7 +112,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
     .max(MAX_TASK_WAIT_MS)
     .optional()
     .describe(
-      `Milliseconds to wait locally before returning a still-running task. Defaults to ${TASK_WAIT_MS}; use a longer wait to reduce repeated host-visible polling calls.`,
+      `Milliseconds to wait locally before returning a still-running task. Defaults to ${TASK_WAIT_MS} and is capped at ${MAX_TASK_WAIT_MS} so the host receives regular completed tool results during long work.`,
     );
 
   server.registerTool(
@@ -278,7 +279,7 @@ export function registerLocalTaskTools(options: LocalTaskToolOptions): void {
     {
       title: "Wait for coding task",
       description:
-        "Wait for a run_task worker that is still running. This performs a long local wait before returning, so use one wait_task call rather than frequent polling. Do not use it for exec_command process sessions.",
+        "Wait briefly for a run_task worker that is still running. Long jobs should use repeated bounded wait_task calls so the host receives regular completed tool results. Do not use it for exec_command process sessions.",
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         taskId: z

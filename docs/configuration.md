@@ -94,9 +94,9 @@ same logical worker and provider session. `cancel_task` interrupts only that
 task's current provider turn/session and leaves shared provider runtimes alive;
 cancelled tasks become `stopped` and can be continued later. `run_task`, `continue_task`, and
 `wait_task` wait locally for up to a bounded window; the default task wait is
-90 seconds and the maximum is 110 seconds. This is the preferred path for
-reducing host-visible MCP call volume during long implementation jobs while
-keeping the worker lifecycle explicit.
+25 seconds and the maximum is 30 seconds. Long workers remain alive between
+calls, while the bounded request window gives hosts such as ChatGPT regular
+completed MCP tool results instead of depending on one long host continuation.
 
 The dedicated MCP tools `grep`, `glob`, and `ls` are not exposed. Each mode uses
 its shell tool with programs such as `rg`, `find`, and `ls` when it needs those

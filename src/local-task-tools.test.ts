@@ -50,9 +50,9 @@ test("task target selection prefers an explicit default profile then a usable pr
   );
 });
 
-test("task waits use a long host-friendly default with the same upper bound as process polling", () => {
-  assert.equal(TASK_WAIT_MS, 90_000);
-  assert.equal(MAX_TASK_WAIT_MS, 110_000);
+test("task waits keep host-visible calls bounded", () => {
+  assert.equal(TASK_WAIT_MS, 25_000);
+  assert.equal(MAX_TASK_WAIT_MS, 30_000);
 });
 
 test("run_task worker polling stays internal until the bounded task completes", async () => {

@@ -104,9 +104,10 @@ test("enabled subagents expose bounded high-level task tools", async (t) => {
   } | undefined;
 
   assert.match(targetSchema?.description ?? "", /profile or provider returned by open_workspace/i);
-  assert.equal(runYieldSchema?.maximum, 110_000);
-  assert.match(runYieldSchema?.description ?? "", /Defaults to 90000/);
-  assert.equal(waitYieldSchema?.maximum, 110_000);
+  assert.equal(runYieldSchema?.maximum, 30_000);
+  assert.match(runYieldSchema?.description ?? "", /Defaults to 25000/);
+  assert.match(runYieldSchema?.description ?? "", /capped at 30000/);
+  assert.equal(waitYieldSchema?.maximum, 30_000);
 
   for (const name of ["run_task", "continue_task", "cancel_task", "wait_task"]) {
     const tool = tools.tools.find((candidate) => candidate.name === name);

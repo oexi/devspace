@@ -178,8 +178,10 @@ require several separate reads, edits, and command calls. Pass `target` when an
 agent profile or provider returned by `open_workspace` is a better fit than the
 default worker. DevSpace runs that bounded worker locally and waits before
 returning. If the worker is still running, use `wait_task` with the returned
-task ID. Task waits default to 90 seconds and can wait up to 110 seconds so
-unattended work does not require frequent host-visible polling.
+task ID. Task waits default to 25 seconds and are capped at 30 seconds. The
+worker continues independently between calls; the bounded host-visible waits
+give ChatGPT regular completed tool-result boundaries while the SSE transport
+heartbeat keeps each individual MCP request alive.
 
 After reviewing a worker's result, use `continue_task` when the same logical
 worker should address follow-up findings. It reuses the task ID and provider
@@ -227,9 +229,9 @@ aggregate review tool available.
 
 An MCP host may still show its own generic tool-call entry for every invocation
 even when Apps UI metadata is disabled. For long coding jobs,
-`run_task`/`continue_task` with long `wait_task` calls reduce that host-visible
-invocation count; disabling DevSpace UI metadata alone cannot suppress
-host-owned tool-call history.
+`run_task`/`continue_task` with bounded `wait_task` calls keep the worker durable
+while periodically completing the host-visible MCP request. Disabling DevSpace
+UI metadata alone cannot suppress host-owned tool-call history.
 
 DevSpace serves modern MCP request exchanges as SSE and emits transport
 keep-alive comment frames every 10 seconds. This keeps otherwise silent
